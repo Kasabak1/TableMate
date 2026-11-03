@@ -6,11 +6,9 @@ import 'package:str/main.dart';
 
 SupabaseClient get _supabase => Supabase.instance.client;
 
-// ============================================================================
-// 1. MODEL MÓN ĂN TRONG ĐƠN & ĐƠN HÀNG NHÀ BẾP (BẢNG: kitchen_orders)
-// ============================================================================
 enum DishStatus { pending, cooking, ready, served }
 
+// Model từng món trong phiếu gọi món
 class OrderItem {
   final String id;
   final String dishName;
@@ -68,6 +66,7 @@ class OrderItem {
   }
 }
 
+// Model phiếu gọi món nhà bếp
 class KitchenOrder {
   final String orderId;
   final String tableNumber;
@@ -107,83 +106,49 @@ class KitchenOrder {
 
     return KitchenOrder(
       orderId: row['order_id']?.toString() ?? '',
-      tableNumber: row['table_number']?.toString() ?? 'Bàn 01',
+      tableNumber: row['table_number']?.toString() ?? '',
       createdAt: row['created_at']?.toString() ?? '',
       items: parsedItems,
     );
   }
 }
 
+// Quản lý đơn bếp thời gian thực trên Supabase
 class KitchenOrderNotifier extends StateNotifier<List<KitchenOrder>> {
-  StreamSubscription<List<Map<String, dynamic>>>? _orderSubscription;
+  Timer? _syncTimer;
 
-  KitchenOrderNotifier() : super(_initialMockOrders) {
+  KitchenOrderNotifier() : super([]) {
     listenToRealtimeOrders();
   }
 
-  static final List<KitchenOrder> _initialMockOrders = [
-    KitchenOrder(
-      orderId: 'ORD-101',
-      tableNumber: 'Bàn 02',
-      createdAt: '10:15',
-      items: [
-        OrderItem(
-          id: 'i1',
-          dishName: 'Phở Bò Kobe',
-          quantity: 2,
-          price: 99000,
-          note: '1 bát không hành',
-          status: DishStatus.pending,
-        ),
-        OrderItem(
-          id: 'i2',
-          dishName: 'Trà Đào Cam Sả',
-          quantity: 2,
-          price: 35000,
-          status: DishStatus.cooking,
-        ),
-      ],
-    ),
-    KitchenOrder(
-      orderId: 'ORD-102',
-      tableNumber: 'Bàn 05',
-      createdAt: '10:18',
-      items: [
-        OrderItem(
-          id: 'i3',
-          dishName: 'Gà Rán Sốt Cay',
-          quantity: 1,
-          price: 55000,
-          note: 'Để sốt riêng',
-          status: DishStatus.ready,
-        ),
-        OrderItem(
-          id: 'i4',
-          dishName: 'Bánh Mì Chảo',
-          quantity: 2,
-          price: 45000,
-          status: DishStatus.pending,
-        ),
-      ],
-    ),
-  ];
-
   void listenToRealtimeOrders() {
     if (!isSupabaseConfigured) return;
-
-    _orderSubscription = _supabase
-        .from('kitchen_orders')
-        .stream(primaryKey: ['order_id'])
-        .listen((List<Map<String, dynamic>> data) {
-      if (data.isNotEmpty) {
-        state = data.map((row) => KitchenOrder.fromSupabaseMap(row)).toList();
-      }
-    }, onError: (err) {
-      debugPrint('Lỗi Realtime kitchen_orders: $err');
+    fetchOrders();
+    _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      fetchOrders();
     });
   }
 
-  Future<void> updateDishStatus(String orderId, String itemId, DishStatus newStatus) async {
+  // Tải danh sách đơn bếp từ Supabase
+  Future<void> fetchOrders() async {
+    if (!isSupabaseConfigured) return;
+    try {
+      final res = await _supabase.from('kitchen_orders').select();
+      final list = (res as List<dynamic>)
+          .map((row) =>
+              KitchenOrder.fromSupabaseMap(Map<String, dynamic>.from(row as Map)))
+          .toList();
+      if (mounted) {
+        state = list;
+      }
+    } catch (e) {
+      debugPrint('Lỗi tải đơn bếp: $e');
+    }
+  }
+
+  // Cập nhật trạng thái chế biến từng món
+  Future<void> updateDishStatus(
+      String orderId, String itemId, DishStatus newStatus) async {
     List<OrderItem>? updatedItemsForCloud;
 
     state = [
@@ -207,11 +172,13 @@ class KitchenOrderNotifier extends StateNotifier<List<KitchenOrder>> {
       await _supabase.from('kitchen_orders').update({
         'items': updatedItemsForCloud!.map((e) => e.toMap()).toList(),
       }).eq('order_id', orderId);
+      await fetchOrders();
     } catch (e) {
-      debugPrint('Lỗi cập nhật trạng thái món lên Supabase: $e');
+      debugPrint('Lỗi cập nhật trạng thái món: $e');
     }
   }
 
+  // Đánh dấu hoàn thành toàn bộ phiếu
   Future<void> markAllReadyInOrder(String orderId) async {
     List<OrderItem>? updatedItemsForCloud;
 
@@ -221,7 +188,8 @@ class KitchenOrderNotifier extends StateNotifier<List<KitchenOrder>> {
           () {
             final newItems = [
               for (final item in order.items)
-                if (item.status == DishStatus.pending || item.status == DishStatus.cooking)
+                if (item.status == DishStatus.pending ||
+                    item.status == DishStatus.cooking)
                   item.copyWith(status: DishStatus.ready)
                 else
                   item
@@ -239,16 +207,21 @@ class KitchenOrderNotifier extends StateNotifier<List<KitchenOrder>> {
       await _supabase.from('kitchen_orders').update({
         'items': updatedItemsForCloud!.map((e) => e.toMap()).toList(),
       }).eq('order_id', orderId);
+      await fetchOrders();
     } catch (e) {
-      debugPrint('Lỗi markAllReadyInOrder trên Supabase: $e');
+      debugPrint('Lỗi markAllReadyInOrder: $e');
     }
   }
 
-  Future<void> addOrderFromWaiter(String tableNumber, List<OrderItem> newItems) async {
+  // Tạo đơn gọi món mới xuống bếp
+  Future<void> addOrderFromWaiter(
+      String tableNumber, List<OrderItem> newItems) async {
     final now = TimeOfDay.now();
-    final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
     final newOrder = KitchenOrder(
-      orderId: 'ORD-${DateTime.now().millisecondsSinceEpoch.toString().substring(8)}',
+      orderId:
+          'ORD-${DateTime.now().millisecondsSinceEpoch.toString().substring(8)}',
       tableNumber: tableNumber,
       createdAt: timeStr,
       items: newItems,
@@ -260,38 +233,43 @@ class KitchenOrderNotifier extends StateNotifier<List<KitchenOrder>> {
 
     try {
       await _supabase.from('kitchen_orders').insert(newOrder.toSupabaseMap());
+      await fetchOrders();
     } catch (e) {
-      debugPrint('Lỗi gửi đơn mới lên Supabase: $e');
+      debugPrint('Lỗi gửi đơn mới: $e');
     }
   }
 
+  // Xóa đơn hàng khi dọn bàn
   Future<void> clearOrdersForTable(String tableNumber) async {
     state = state.where((o) => o.tableNumber != tableNumber).toList();
     if (!isSupabaseConfigured) return;
 
     try {
-      await _supabase.from('kitchen_orders').delete().eq('table_number', tableNumber);
+      await _supabase
+          .from('kitchen_orders')
+          .delete()
+          .eq('table_number', tableNumber);
+      await fetchOrders();
     } catch (e) {
-      debugPrint('Lỗi xóa đơn khi dọn bàn trên Supabase: $e');
+      debugPrint('Lỗi xóa đơn khi dọn bàn: $e');
     }
   }
 
   @override
   void dispose() {
-    _orderSubscription?.cancel();
+    _syncTimer?.cancel();
     super.dispose();
   }
 }
 
-final kitchenOrdersProvider = StateNotifierProvider<KitchenOrderNotifier, List<KitchenOrder>>((ref) {
+final kitchenOrdersProvider =
+    StateNotifierProvider<KitchenOrderNotifier, List<KitchenOrder>>((ref) {
   return KitchenOrderNotifier();
 });
 
-// ============================================================================
-// 2. MODEL & NOTIFIER ĐỒNG BỘ SƠ ĐỒ BÀN ĂN (Bổ sung trạng thái `reserved`)
-// ============================================================================
 enum TableState { empty, reserved, occupied, needPayment }
 
+// Model bàn ăn trong nhà hàng
 class RestaurantTable {
   final String number;
   final int seats;
@@ -303,10 +281,10 @@ class RestaurantTable {
     required this.state,
   });
 
-  RestaurantTable copyWith({TableState? state}) {
+  RestaurantTable copyWith({TableState? state, int? seats}) {
     return RestaurantTable(
       number: number,
-      seats: seats,
+      seats: seats ?? this.seats,
       state: state ?? this.state,
     );
   }
@@ -327,66 +305,93 @@ class RestaurantTable {
     );
 
     return RestaurantTable(
-      number: row['table_number']?.toString() ?? 'Bàn 01',
+      number: row['table_number']?.toString() ?? '',
       seats: (row['seats'] as num?)?.toInt() ?? 4,
       state: parsedState,
     );
   }
 }
 
+// Quản lý danh sách bàn ăn trên Supabase
 class TableListNotifier extends StateNotifier<List<RestaurantTable>> {
-  StreamSubscription<List<Map<String, dynamic>>>? _tableSubscription;
+  Timer? _syncTimer;
 
-  TableListNotifier() : super(_generateDefaultTables()) {
+  TableListNotifier() : super([]) {
     _initRealtimeTables();
   }
 
-  static List<RestaurantTable> _generateDefaultTables() {
-    return List.generate(12, (index) {
-      final num = (index + 1).toString().padLeft(2, '0');
-      final tableName = 'Bàn $num';
-      TableState initialState = TableState.empty;
-      if (tableName == 'Bàn 02' || tableName == 'Bàn 05') {
-        initialState = TableState.occupied;
-      } else if (tableName == 'Bàn 03') {
-        initialState = TableState.reserved;
-      } else if (tableName == 'Bàn 08') {
-        initialState = TableState.needPayment;
-      }
-      return RestaurantTable(
-        number: tableName,
-        seats: (index % 3 == 0) ? 6 : 4,
-        state: initialState,
-      );
+  void _initRealtimeTables() {
+    if (!isSupabaseConfigured) return;
+    fetchTables();
+    _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      fetchTables();
     });
   }
 
-  Future<void> _initRealtimeTables() async {
+  // Tải danh sách bàn ăn từ Supabase
+  Future<void> fetchTables() async {
     if (!isSupabaseConfigured) return;
-
     try {
-      final existing = await _supabase.from('restaurant_tables').select();
-      if (existing.isEmpty) {
-        final seedData = _generateDefaultTables().map((t) => t.toSupabaseMap()).toList();
-        await _supabase.from('restaurant_tables').insert(seedData);
+      final res = await _supabase
+          .from('restaurant_tables')
+          .select()
+          .order('table_number', ascending: true);
+      final list = (res as List<dynamic>)
+          .map((row) => RestaurantTable.fromSupabaseMap(
+              Map<String, dynamic>.from(row as Map)))
+          .toList();
+      if (mounted) {
+        state = list;
       }
     } catch (e) {
-      debugPrint('Lỗi kiểm tra dữ liệu bàn trên Supabase: $e');
+      debugPrint('Lỗi tải danh sách bàn: $e');
     }
-
-    _tableSubscription = _supabase
-        .from('restaurant_tables')
-        .stream(primaryKey: ['table_number'])
-        .order('table_number', ascending: true)
-        .listen((List<Map<String, dynamic>> data) {
-      if (data.isNotEmpty) {
-        state = data.map((row) => RestaurantTable.fromSupabaseMap(row)).toList();
-      }
-    }, onError: (err) {
-      debugPrint('Lỗi Realtime restaurant_tables: $err');
-    });
   }
 
+  // Thêm bàn mới
+  Future<bool> addTable(String tableNumber, int seats) async {
+    final cleanName = tableNumber.trim();
+    if (cleanName.isEmpty) return false;
+    if (state.any((t) => t.number.toLowerCase() == cleanName.toLowerCase())) {
+      return false;
+    }
+
+    final newTable = RestaurantTable(
+      number: cleanName,
+      seats: seats,
+      state: TableState.empty,
+    );
+    state = [...state, newTable];
+
+    if (!isSupabaseConfigured) return true;
+    try {
+      await _supabase.from('restaurant_tables').insert(newTable.toSupabaseMap());
+      await fetchTables();
+      return true;
+    } catch (e) {
+      debugPrint('Lỗi thêm bàn mới: $e');
+      return false;
+    }
+  }
+
+  // Xóa bàn
+  Future<bool> deleteTable(String tableNumber) async {
+    state = state.where((t) => t.number != tableNumber).toList();
+    if (!isSupabaseConfigured) return true;
+    try {
+      await _supabase
+          .from('restaurant_tables')
+          .delete()
+          .eq('table_number', tableNumber);
+      await fetchTables();
+      return true;
+    } catch (e) {
+      debugPrint('Lỗi xóa bàn: $e');
+      return false;
+    }
+  }
+
+  // Cập nhật trạng thái bàn
   Future<void> setTableState(String tableNumber, TableState newState) async {
     state = [
       for (final t in state)
@@ -398,27 +403,26 @@ class TableListNotifier extends StateNotifier<List<RestaurantTable>> {
     try {
       await _supabase
           .from('restaurant_tables')
-          .update({'state': newState.name})
-          .eq('table_number', tableNumber);
+          .update({'state': newState.name}).eq('table_number', tableNumber);
+      await fetchTables();
     } catch (e) {
-      debugPrint('Lỗi cập nhật trạng thái bàn trên Supabase: $e');
+      debugPrint('Lỗi cập nhật trạng thái bàn: $e');
     }
   }
 
   @override
   void dispose() {
-    _tableSubscription?.cancel();
+    _syncTimer?.cancel();
     super.dispose();
   }
 }
 
-final tableListProvider = StateNotifierProvider<TableListNotifier, List<RestaurantTable>>((ref) {
+final tableListProvider =
+    StateNotifierProvider<TableListNotifier, List<RestaurantTable>>((ref) {
   return TableListNotifier();
 });
 
-// ============================================================================
-// 3. MODEL & NOTIFIER ĐƠN ĐẶT BÀN (KHÁCH ĐẶT -> PHỤC VỤ DUYỆT & XẾP BÀN)
-// ============================================================================
+// Model đơn đặt bàn trước
 class Reservation {
   final String id;
   final String customerName;
@@ -429,13 +433,13 @@ class Reservation {
   final String time;
   final int guests;
   final String note;
-  final String status; // 'PENDING' (Chờ xếp bàn), 'CONFIRMED' (Đã xếp bàn), 'CANCELLED' (Đã hủy)
-  final String? assignedTable; // VD: 'Bàn 03'
+  final String status;
+  final String? assignedTable;
 
   Reservation({
     required this.id,
-    this.customerName = 'Nguyễn Văn Khách',
-    this.customerPhone = '0901111111',
+    required this.customerName,
+    required this.customerPhone,
     required this.restaurantName,
     required this.address,
     required this.date,
@@ -482,7 +486,7 @@ class Reservation {
     final tableStr = row['assigned_table']?.toString() ?? '';
     return Reservation(
       id: row['id']?.toString() ?? '',
-      customerName: row['customer_name']?.toString() ?? 'Khách hàng',
+      customerName: row['customer_name']?.toString() ?? '',
       customerPhone: row['customer_phone']?.toString() ?? '',
       restaurantName: row['restaurant_name']?.toString() ?? '',
       address: row['address']?.toString() ?? '',
@@ -496,57 +500,41 @@ class Reservation {
   }
 }
 
+// Quản lý danh sách đặt bàn trên Supabase
 class ReservationNotifier extends StateNotifier<List<Reservation>> {
   final Ref ref;
-  StreamSubscription<List<Map<String, dynamic>>>? _resSubscription;
+  Timer? _syncTimer;
 
-  ReservationNotifier(this.ref)
-      : super([
-          Reservation(
-            id: 'RES-1002',
-            customerName: 'Nguyễn Văn Khách',
-            customerPhone: '0901111111',
-            restaurantName: 'Bếp Thái Koh Yam',
-            address: '122 Thái Hà, Đống Đa, Hà Nội',
-            date: '15/10/2026',
-            time: '19:00',
-            guests: 4,
-            note: 'Ngồi gần cửa sổ, có trẻ em',
-            status: 'PENDING', // Đang chờ Phục vụ duyệt và xếp bàn
-          ),
-          Reservation(
-            id: 'RES-1001',
-            customerName: 'Trần Minh Anh',
-            customerPhone: '0988777666',
-            restaurantName: 'Bếp Thái Koh Yam',
-            address: '122 Thái Hà, Đống Đa, Hà Nội',
-            date: '15/10/2026',
-            time: '18:30',
-            guests: 6,
-            note: 'Tiệc sinh nhật',
-            status: 'CONFIRMED',
-            assignedTable: 'Bàn 03',
-          ),
-        ]) {
+  ReservationNotifier(this.ref) : super([]) {
     _initRealtimeReservations();
   }
 
   void _initRealtimeReservations() {
     if (!isSupabaseConfigured) return;
-
-    _resSubscription = _supabase
-        .from('reservations')
-        .stream(primaryKey: ['id'])
-        .listen((List<Map<String, dynamic>> data) {
-      if (data.isNotEmpty) {
-        state = data.map((r) => Reservation.fromSupabaseMap(r)).toList();
-      }
-    }, onError: (err) {
-      debugPrint('Lỗi Realtime reservations: $err');
+    fetchReservations();
+    _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      fetchReservations();
     });
   }
 
-  // Khách hàng gửi yêu cầu Đặt bàn mới (Mặc định trạng thái PENDING chờ Phục vụ xếp bàn)
+  // Tải danh sách đặt bàn từ Supabase
+  Future<void> fetchReservations() async {
+    if (!isSupabaseConfigured) return;
+    try {
+      final res = await _supabase.from('reservations').select();
+      final list = (res as List<dynamic>)
+          .map((r) =>
+              Reservation.fromSupabaseMap(Map<String, dynamic>.from(r as Map)))
+          .toList();
+      if (mounted) {
+        state = list;
+      }
+    } catch (e) {
+      debugPrint('Lỗi tải danh sách đặt bàn: $e');
+    }
+  }
+
+  // Tạo đơn đặt bàn mới
   Future<void> addReservation({
     required String customerName,
     required String customerPhone,
@@ -574,13 +562,15 @@ class ReservationNotifier extends StateNotifier<List<Reservation>> {
     if (!isSupabaseConfigured) return;
     try {
       await _supabase.from('reservations').insert(newRes.toSupabaseMap());
+      await fetchReservations();
     } catch (e) {
-      debugPrint('Lỗi thêm đặt bàn lên Supabase: $e');
+      debugPrint('Lỗi thêm đặt bàn: $e');
     }
   }
 
-  // Nhân viên Phục vụ nhận đơn và xếp bàn cho Khách hàng
-  Future<void> assignTableToReservation(String reservationId, String tableNumber) async {
+  // Gán bàn cho đơn đặt trước
+  Future<void> assignTableToReservation(
+      String reservationId, String tableNumber) async {
     state = [
       for (final res in state)
         if (res.id == reservationId)
@@ -589,8 +579,9 @@ class ReservationNotifier extends StateNotifier<List<Reservation>> {
           res
     ];
 
-    // Tự động chuyển bàn đó trên Sơ đồ bàn sang trạng thái "Đã đặt trước" (reserved)
-    ref.read(tableListProvider.notifier).setTableState(tableNumber, TableState.reserved);
+    ref
+        .read(tableListProvider.notifier)
+        .setTableState(tableNumber, TableState.reserved);
 
     if (!isSupabaseConfigured) return;
     try {
@@ -598,12 +589,13 @@ class ReservationNotifier extends StateNotifier<List<Reservation>> {
         'status': 'CONFIRMED',
         'assigned_table': tableNumber,
       }).eq('id', reservationId);
+      await fetchReservations();
     } catch (e) {
-      debugPrint('Lỗi xếp bàn trên Supabase: $e');
+      debugPrint('Lỗi xếp bàn: $e');
     }
   }
 
-  // Khách hàng hoặc Phục vụ hủy đặt bàn
+  // Hủy đơn đặt bàn
   Future<void> cancelReservation(String id) async {
     String? tableToRelease;
     for (final res in state) {
@@ -617,26 +609,34 @@ class ReservationNotifier extends StateNotifier<List<Reservation>> {
         if (res.id == id) res.copyWith(status: 'CANCELLED') else res
     ];
 
-    // Nếu đơn này đã được xếp bàn trước đó thì trả lại bàn trống
     if (tableToRelease != null) {
-      ref.read(tableListProvider.notifier).setTableState(tableToRelease, TableState.empty);
+      ref
+          .read(tableListProvider.notifier)
+          .setTableState(tableToRelease, TableState.empty);
     }
 
     if (!isSupabaseConfigured) return;
     try {
-      await _supabase.from('reservations').update({'status': 'CANCELLED'}).eq('id', id);
+      await _supabase
+          .from('reservations')
+          .update({'status': 'CANCELLED'}).eq('id', id);
+      await fetchReservations();
     } catch (e) {
-      debugPrint('Lỗi hủy đặt bàn trên Supabase: $e');
+      debugPrint('Lỗi hủy đặt bàn: $e');
     }
   }
 
   @override
   void dispose() {
-    _resSubscription?.cancel();
+    _syncTimer?.cancel();
     super.dispose();
   }
 }
 
-final reservationProvider = StateNotifierProvider<ReservationNotifier, List<Reservation>>((ref) {
+final reservationProvider =
+    StateNotifierProvider<ReservationNotifier, List<Reservation>>((ref) {
   return ReservationNotifier(ref);
 });
+
+// Lưu doanh thu đã thanh toán trong ca
+final settledRevenueProvider = StateProvider<int>((ref) => 0);

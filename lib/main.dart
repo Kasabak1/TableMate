@@ -8,6 +8,7 @@ const String supabaseAnonKey = 'sb_publishable_Vm5M8pjb4s9_xQqX7voaZw_LFlU8-00';
 
 bool isSupabaseConfigured = false;
 
+// Khởi tạo ứng dụng và kết nối Supabase
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -20,12 +21,9 @@ Future<void> main() async {
         anonKey: supabaseAnonKey,
       );
       isSupabaseConfigured = true;
-      debugPrint('✅ Đã kết nối thành công tới Supabase Cloud!');
-    } else {
-      debugPrint('⚠️ Chưa điền Supabase Key -> Đang chạy chế độ Local Fallback.');
     }
   } catch (e) {
-    debugPrint('❌ Lỗi khởi tạo Supabase: $e');
+    debugPrint('Lỗi khởi tạo Supabase: $e');
   }
 
   runApp(
@@ -35,6 +33,7 @@ Future<void> main() async {
   );
 }
 
+// Cấu hình MaterialApp và điều hướng
 class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
@@ -43,9 +42,10 @@ class MyApp extends ConsumerWidget {
     final router = ref.watch(appRouterProvider);
 
     return MaterialApp.router(
-      title: 'Smart Restaurant Order ',
+      title: 'Smart Restaurant Order',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.orange),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFFF5722)),
+        scaffoldBackgroundColor: const Color(0xFFF6F7FB),
         useMaterial3: true,
       ),
       routerConfig: router,

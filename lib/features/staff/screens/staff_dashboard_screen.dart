@@ -6,6 +6,7 @@ import 'package:str/features/staff/providers/staff_provider.dart';
 import 'package:str/features/staff/screens/waiter_view.dart';
 import 'package:str/features/staff/screens/kitchen_view.dart';
 
+// Màn hình chính phân hệ Nhân viên
 class StaffDashboardScreen extends ConsumerWidget {
   const StaffDashboardScreen({super.key});
 
@@ -15,11 +16,11 @@ class StaffDashboardScreen extends ConsumerWidget {
     final orders = ref.watch(kitchenOrdersProvider);
     final reservations = ref.watch(reservationProvider);
 
-    // Kiểm tra xem nhân viên đang đăng nhập thuộc bộ phận Bếp hay Phục vụ
     final subRole = (currentUser?.subRole ?? '').toLowerCase();
-    final bool isKitchenStaff = subRole.contains('bếp') || subRole.contains('kitchen') || subRole.contains('bar');
+    final bool isKitchenStaff = subRole.contains('bếp') ||
+        subRole.contains('kitchen') ||
+        subRole.contains('bar');
 
-    // Đếm số món nấu xong chờ Phục vụ bưng ra
     int readyToServeCount = 0;
     for (final o in orders) {
       for (final item in o.items) {
@@ -27,36 +28,62 @@ class StaffDashboardScreen extends ConsumerWidget {
       }
     }
 
-    // Đếm số đơn đặt bàn mới của Khách đang chờ Phục vụ xếp bàn
-    final int pendingBookingCount = reservations.where((r) => r.status == 'PENDING').length;
+    final myRestaurant = currentUser?.restaurantName ?? '';
+    final int pendingBookingCount = reservations
+        .where((r) =>
+            r.status == 'PENDING' &&
+            (myRestaurant.isEmpty || r.restaurantName == myRestaurant))
+        .length;
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF6F7FB),
       appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              isKitchenStaff ? 'Màn hình Nhà Bếp (KDS)' : 'Màn hình Nhân viên Phục vụ',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              isKitchenStaff
+                  ? 'Điều phối Nhà Bếp (KDS)'
+                  : 'Điều phối Phục vụ & Thu ngân',
+              style: const TextStyle(
+                fontWeight: FontWeight.w900,
+                fontSize: 18,
+                color: Color(0xFF1A1D26),
+              ),
             ),
             if (currentUser != null)
               Text(
-                'NV: ${currentUser.name} (${currentUser.subRole})',
-                style: const TextStyle(fontSize: 12, color: Colors.white70),
+                '${currentUser.name} (${currentUser.subRole})${myRestaurant.isNotEmpty ? " • $myRestaurant" : ""}',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: isKitchenStaff
+                      ? const Color(0xFFFF5722)
+                      : const Color(0xFF00C853),
+                ),
               ),
           ],
         ),
-        backgroundColor: isKitchenStaff ? Colors.deepOrange[800] : Colors.green[700],
-        foregroundColor: Colors.white,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Đăng xuất',
-            onPressed: () => context.pushReplacement('/'),
+          Container(
+            margin: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.red[50],
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.logout_rounded, color: Colors.red),
+              tooltip: 'Đăng xuất',
+              onPressed: () {
+                ref.read(currentUserProvider.notifier).state = null;
+                context.pushReplacement('/');
+              },
+            ),
           )
         ],
       ),
-      // Tách hoàn toàn giao diện theo chức vụ của nhân viên
       body: isKitchenStaff
           ? const KitchenView()
           : WaiterView(

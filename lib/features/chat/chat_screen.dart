@@ -8,11 +8,16 @@ import 'package:str/features/home/screens/main_dashboard_screen.dart';
 
 SupabaseClient get _supabase => Supabase.instance.client;
 
-// ============================================================================
-// 1. MODEL & REALTIME PROVIDER CHO TIN NHẮN CHAT (Có thêm phân loại Nhà Hàng)
-// ============================================================================
+// Model tin nhắn trò chuyện
 class ChatMessage {
-  final String id, roomId, restaurantName, customerName, senderRole, senderName, content, createdAt;
+  final String id,
+      roomId,
+      restaurantName,
+      customerName,
+      senderRole,
+      senderName,
+      content,
+      createdAt;
 
   ChatMessage({
     required this.id,
@@ -48,8 +53,9 @@ class ChatMessage {
       );
 }
 
+// Quản lý tin nhắn thời gian thực trên Supabase
 class ChatNotifier extends StateNotifier<List<ChatMessage>> {
-  StreamSubscription<List<Map<String, dynamic>>>? _chatSub;
+  Timer? _syncTimer;
 
   ChatNotifier() : super([]) {
     _initRealtimeChat();
@@ -57,20 +63,33 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
 
   void _initRealtimeChat() {
     if (!isSupabaseConfigured) return;
-
-    _chatSub = _supabase
-        .from('chat_messages')
-        .stream(primaryKey: ['id'])
-        .order('id', ascending: true)
-        .listen((data) {
-      if (data.isNotEmpty) {
-        state = data.map((r) => ChatMessage.fromSupabaseMap(r)).toList();
-      }
-    }, onError: (err) {
-      debugPrint('Lỗi Realtime chat_messages: $err');
+    fetchMessages();
+    _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      fetchMessages();
     });
   }
 
+  // Tải tin nhắn từ Supabase
+  Future<void> fetchMessages() async {
+    if (!isSupabaseConfigured) return;
+    try {
+      final res = await _supabase
+          .from('chat_messages')
+          .select()
+          .order('id', ascending: true);
+      final list = (res as List<dynamic>)
+          .map((r) =>
+              ChatMessage.fromSupabaseMap(Map<String, dynamic>.from(r as Map)))
+          .toList();
+      if (mounted) {
+        state = list;
+      }
+    } catch (e) {
+      debugPrint('Lỗi tải tin nhắn: $e');
+    }
+  }
+
+  // Gửi tin nhắn mới
   Future<void> sendMessage({
     required String roomId,
     required String restaurantName,
@@ -83,7 +102,8 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     if (text.isEmpty) return;
 
     final now = TimeOfDay.now();
-    final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final timeStr =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
     final newMsg = ChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
@@ -101,27 +121,32 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     if (!isSupabaseConfigured) return;
     try {
       await _supabase.from('chat_messages').insert(newMsg.toSupabaseMap());
+      await fetchMessages();
     } catch (e) {
-      debugPrint('Lỗi gửi tin nhắn lên Supabase: $e');
+      debugPrint('Lỗi gửi tin nhắn: $e');
     }
   }
 
   @override
   void dispose() {
-    _chatSub?.cancel();
+    _syncTimer?.cancel();
     super.dispose();
   }
 }
 
-final chatProvider = StateNotifierProvider<ChatNotifier, List<ChatMessage>>((ref) {
+final chatProvider =
+    StateNotifierProvider<ChatNotifier, List<ChatMessage>>((ref) {
   return ChatNotifier();
 });
 
-// ============================================================================
-// 2. MÀN HÌNH PHÒNG CHAT CHI TIẾT
-// ============================================================================
+// Màn hình phòng chat chi tiết
 class ChatRoomScreen extends ConsumerStatefulWidget {
-  final String roomId, restaurantName, customerName, currentRole, currentSenderName, title;
+  final String roomId,
+      restaurantName,
+      customerName,
+      currentRole,
+      currentSenderName,
+      title;
 
   const ChatRoomScreen({
     super.key,
@@ -141,6 +166,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   final _msgController = TextEditingController();
   final _scrollController = ScrollController();
 
+  @override
+  void dispose() {
+    _msgController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  // Xử lý gửi tin nhắn trong phòng
   void _handleSend([String? quickText]) {
     final text = quickText ?? _msgController.text;
     if (text.trim().isEmpty) return;
@@ -158,7 +191,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
 
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_scrollController.hasClients) {
-        _scrollController.animateTo(_scrollController.position.maxScrollExtent, duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
       }
     });
   }
@@ -166,11 +203,20 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   @override
   Widget build(BuildContext context) {
     final allMessages = ref.watch(chatProvider);
-    final roomMessages = allMessages.where((m) => m.roomId == widget.roomId).toList();
+    final roomMessages =
+        allMessages.where((m) => m.roomId == widget.roomId).toList();
 
     final List<String> quickReplies = widget.currentRole == 'CUSTOMER'
-        ? ['Quán còn bàn trống tối nay không ạ?', 'Cho mình xin ghế trẻ em nhé', 'Cho mình gọi thanh toán nhé!']
-        : ['Dạ nhà hàng đã nhận yêu cầu ạ!', 'Dạ bàn của mình đã được giữ chỗ rồi ạ.', 'Món ăn đang được chuẩn bị nhé bạn.'];
+        ? [
+            'Quán còn bàn trống tối nay không ạ?',
+            'Cho mình xin ghế trẻ em nhé',
+            'Cho mình gọi thanh toán nhé!'
+          ]
+        : [
+            'Dạ nhà hàng đã nhận yêu cầu ạ!',
+            'Dạ bàn của mình đã được giữ chỗ rồi ạ.',
+            'Món ăn đang được chuẩn bị nhé bạn.'
+          ];
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F6FA),
@@ -184,7 +230,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               radius: 18,
               backgroundColor: const Color(0xFFFF5722).withOpacity(0.12),
               child: Icon(
-                widget.currentRole == 'CUSTOMER' ? Icons.storefront_rounded : Icons.person_rounded,
+                widget.currentRole == 'CUSTOMER'
+                    ? Icons.storefront_rounded
+                    : Icons.person_rounded,
                 color: const Color(0xFFFF5722),
                 size: 20,
               ),
@@ -194,12 +242,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(widget.title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                  Text(widget.title,
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w800)),
                   const Row(
                     children: [
                       Icon(Icons.circle, color: Color(0xFF00C853), size: 8),
                       SizedBox(width: 4),
-                      Text('Đang trực tuyến', style: TextStyle(fontSize: 11, color: Color(0xFF6C7278))),
+                      Text('Đang trực tuyến',
+                          style: TextStyle(
+                              fontSize: 11, color: Color(0xFF6C7278))),
                     ],
                   ),
                 ],
@@ -212,7 +264,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         children: [
           Expanded(
             child: roomMessages.isEmpty
-                ? const Center(child: Text('Hãy gửi tin nhắn đầu tiên!', style: TextStyle(color: Color(0xFF9A9FA5))))
+                ? const Center(
+                    child: Text('Hãy gửi tin nhắn đầu tiên!',
+                        style: TextStyle(color: Color(0xFF9A9FA5))))
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.all(16),
@@ -222,24 +276,74 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                       final isMe = msg.senderRole == widget.currentRole;
 
                       return Align(
-                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        alignment:
+                            isMe ? Alignment.centerRight : Alignment.centerLeft,
                         child: Container(
                           margin: const EdgeInsets.only(bottom: 12),
-                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.76),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          constraints: BoxConstraints(
+                              maxWidth:
+                                  MediaQuery.of(context).size.width * 0.76),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
                           decoration: BoxDecoration(
-                            gradient: isMe ? const LinearGradient(colors: [Color(0xFFFF7043), Color(0xFFFF5722)]) : null,
+                            gradient: isMe
+                                ? const LinearGradient(colors: [
+                                    Color(0xFFFF7043),
+                                    Color(0xFFFF5722)
+                                  ])
+                                : null,
                             color: isMe ? null : Colors.white,
-                            borderRadius: BorderRadius.only(topLeft: const Radius.circular(20), topRight: const Radius.circular(20), bottomLeft: Radius.circular(isMe ? 20 : 4), bottomRight: Radius.circular(isMe ? 4 : 20)),
-                            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, 3))],
+                            borderRadius: BorderRadius.only(
+                              topLeft: const Radius.circular(20),
+                              topRight: const Radius.circular(20),
+                              bottomLeft: Radius.circular(isMe ? 20 : 4),
+                              bottomRight: Radius.circular(isMe ? 4 : 20),
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.04),
+                                blurRadius: 8,
+                                offset: const Offset(0, 3),
+                              )
+                            ],
                           ),
                           child: Column(
-                            crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                            crossAxisAlignment: isMe
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
                             children: [
-                              if (!isMe) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text(msg.senderName, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFFF5722)))),
-                              Text(msg.content, style: TextStyle(color: isMe ? Colors.white : const Color(0xFF1A1D26), fontSize: 14, height: 1.35)),
+                              if (!isMe)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Text(
+                                    msg.senderName,
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFFFF5722),
+                                    ),
+                                  ),
+                                ),
+                              Text(
+                                msg.content,
+                                style: TextStyle(
+                                  color: isMe
+                                      ? Colors.white
+                                      : const Color(0xFF1A1D26),
+                                  fontSize: 14,
+                                  height: 1.35,
+                                ),
+                              ),
                               const SizedBox(height: 4),
-                              Text(msg.createdAt, style: TextStyle(fontSize: 10, color: isMe ? Colors.white70 : const Color(0xFF9A9FA5))),
+                              Text(
+                                msg.createdAt,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: isMe
+                                      ? Colors.white70
+                                      : const Color(0xFF9A9FA5),
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -257,9 +361,18 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               itemBuilder: (context, index) {
                 return ActionChip(
                   backgroundColor: Colors.white,
-                  side: BorderSide(color: const Color(0xFFFF5722).withOpacity(0.3)),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                  label: Text(quickReplies[index], style: const TextStyle(fontSize: 12, color: Color(0xFFFF5722), fontWeight: FontWeight.w600)),
+                  side:
+                      BorderSide(color: const Color(0xFFFF5722).withOpacity(0.3)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20)),
+                  label: Text(
+                    quickReplies[index],
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFFFF5722),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   onPressed: () => _handleSend(quickReplies[index]),
                 );
               },
@@ -268,7 +381,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 12, offset: const Offset(0, -2))]),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 12,
+                  offset: const Offset(0, -2),
+                )
+              ],
+            ),
             child: SafeArea(
               child: Row(
                 children: [
@@ -276,13 +398,31 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     child: TextField(
                       controller: _msgController,
                       onSubmitted: (_) => _handleSend(),
-                      decoration: InputDecoration(hintText: 'Nhập tin nhắn...', filled: true, fillColor: const Color(0xFFF4F6FA), border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none), contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12)),
+                      decoration: InputDecoration(
+                        hintText: 'Nhập tin nhắn...',
+                        filled: true,
+                        fillColor: const Color(0xFFF4F6FA),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 12),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Container(
-                    decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [Color(0xFFFF7043), Color(0xFFFF5722)])),
-                    child: IconButton(icon: const Icon(Icons.send_rounded, color: Colors.white, size: 20), onPressed: () => _handleSend()),
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                          colors: [Color(0xFFFF7043), Color(0xFFFF5722)]),
+                    ),
+                    child: IconButton(
+                      icon: const Icon(Icons.send_rounded,
+                          color: Colors.white, size: 20),
+                      onPressed: () => _handleSend(),
+                    ),
                   ),
                 ],
               ),
@@ -294,9 +434,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 }
 
-// ============================================================================
-// 3. HỘP THƯ DÀNH CHO KHÁCH HÀNG (Hiển thị các Nhà hàng đã Chat)
-// ============================================================================
+// Danh sách hội thoại của khách hàng
 class CustomerChatListView extends ConsumerWidget {
   const CustomerChatListView({super.key});
 
@@ -305,11 +443,14 @@ class CustomerChatListView extends ConsumerWidget {
     final profile = ref.watch(userProfileProvider);
     final currentUser = ref.watch(currentUserProvider);
     final myPhone = currentUser?.phone ?? profile.phone;
-    final myName = currentUser?.name ?? profile.name;
+    final myName = (currentUser != null && currentUser.name.isNotEmpty)
+        ? currentUser.name
+        : (profile.name.isNotEmpty ? profile.name : 'Khách hàng');
 
     final allMessages = ref.watch(chatProvider);
-    // Khách hàng chỉ thấy các tin nhắn có roomId bắt đầu bằng SĐT của mình
-    final myMessages = allMessages.where((m) => m.roomId.startsWith(myPhone)).toList();
+    final myMessages = allMessages
+        .where((m) => myPhone.isNotEmpty && m.roomId.startsWith(myPhone))
+        .toList();
 
     final Map<String, ChatMessage> latestByRestaurant = {};
     for (final msg in myMessages) {
@@ -320,7 +461,14 @@ class CustomerChatListView extends ConsumerWidget {
     return Scaffold(
       backgroundColor: const Color(0xFFF6F7FB),
       appBar: AppBar(
-        title: const Text('Tin nhắn hỗ trợ', style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF1A1D26), fontSize: 24)),
+        title: const Text(
+          'Tin nhắn hỗ trợ',
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            color: Color(0xFF1A1D26),
+            fontSize: 24,
+          ),
+        ),
         backgroundColor: const Color(0xFFF6F7FB),
         elevation: 0,
         centerTitle: false,
@@ -332,7 +480,8 @@ class CustomerChatListView extends ConsumerWidget {
                 children: [
                   Icon(Icons.forum_outlined, size: 72, color: Colors.black12),
                   SizedBox(height: 16),
-                  Text('Bạn chưa có cuộc trò chuyện nào với nhà hàng.', style: TextStyle(color: Colors.grey)),
+                  Text('Bạn chưa có cuộc trò chuyện nào với nhà hàng.',
+                      style: TextStyle(color: Colors.grey)),
                 ],
               ),
             )
@@ -348,15 +497,26 @@ class CustomerChatListView extends ConsumerWidget {
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: isNeedReply ? const Color(0xFFFF5722).withOpacity(0.5) : Colors.transparent, width: 1.5),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10)],
+                    border: Border.all(
+                      color: isNeedReply
+                          ? const Color(0xFFFF5722).withOpacity(0.5)
+                          : Colors.transparent,
+                      width: 1.5,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                          color: Colors.black.withOpacity(0.04), blurRadius: 10)
+                    ],
                   ),
                   child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     leading: CircleAvatar(
                       radius: 24,
-                      backgroundColor: const Color(0xFFFF5722).withOpacity(0.12),
-                      child: const Icon(Icons.storefront_rounded, color: Color(0xFFFF5722)),
+                      backgroundColor:
+                          const Color(0xFFFF5722).withOpacity(0.12),
+                      child: const Icon(Icons.storefront_rounded,
+                          color: Color(0xFFFF5722)),
                     ),
                     title: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -364,12 +524,15 @@ class CustomerChatListView extends ConsumerWidget {
                         Expanded(
                           child: Text(
                             msg.restaurantName,
-                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w800, fontSize: 15),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        Text(msg.createdAt, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                        Text(msg.createdAt,
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey)),
                       ],
                     ),
                     subtitle: Padding(
@@ -378,21 +541,38 @@ class CustomerChatListView extends ConsumerWidget {
                         children: [
                           Expanded(
                             child: Text(
-                              isNeedReply ? '${msg.restaurantName}: ${msg.content}' : 'Bạn: ${msg.content}',
+                              isNeedReply
+                                  ? '${msg.restaurantName}: ${msg.content}'
+                                  : 'Bạn: ${msg.content}',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontWeight: isNeedReply ? FontWeight.bold : FontWeight.normal,
-                                color: isNeedReply ? const Color(0xFF1A1D26) : Colors.grey[600],
+                                fontWeight: isNeedReply
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                                color: isNeedReply
+                                    ? const Color(0xFF1A1D26)
+                                    : Colors.grey[600],
                               ),
                             ),
                           ),
                           if (isNeedReply)
                             Container(
                               margin: const EdgeInsets.only(left: 8),
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(color: const Color(0xFFFF5722), borderRadius: BorderRadius.circular(10)),
-                              child: const Text('Mới', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFF5722),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text(
+                                'Mới',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
                         ],
                       ),
@@ -420,21 +600,20 @@ class CustomerChatListView extends ConsumerWidget {
   }
 }
 
-// ============================================================================
-// 4. HỘP THƯ DÀNH CHO NHÀ HÀNG (Hiển thị các Khách hàng đang Chat)
-// ============================================================================
+// Danh sách hội thoại của nhà hàng
 class RestaurantChatListView extends ConsumerWidget {
   final String staffName;
   const RestaurantChatListView({super.key, required this.staffName});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final currentUser = ref.watch(currentUserProvider);
-    final myRestaurant = currentUser?.restaurantName ?? '';
+    final myRestaurant = ref.watch(adminRestaurantNameProvider);
 
     final allMessages = ref.watch(chatProvider);
-    // Nhà hàng chỉ thấy các tin nhắn gửi đến đúng tên nhà hàng của họ
-    final restaurantMessages = allMessages.where((m) => m.restaurantName == myRestaurant).toList();
+    final restaurantMessages = allMessages
+        .where((m) =>
+            myRestaurant.isNotEmpty && m.restaurantName == myRestaurant)
+        .toList();
 
     final Map<String, ChatMessage> latestByRoom = {};
     for (final msg in restaurantMessages) {
@@ -449,7 +628,12 @@ class RestaurantChatListView extends ConsumerWidget {
           children: [
             const Icon(Icons.forum_outlined, size: 72, color: Colors.black12),
             const SizedBox(height: 16),
-            Text('Chưa có tin nhắn nào gửi tới $myRestaurant.', style: const TextStyle(color: Colors.grey)),
+            Text(
+              myRestaurant.isEmpty
+                  ? 'Vui lòng thiết lập Tên nhà hàng trước.'
+                  : 'Chưa có tin nhắn nào gửi tới $myRestaurant.',
+              style: const TextStyle(color: Colors.grey),
+            ),
           ],
         ),
       );
@@ -467,17 +651,31 @@ class RestaurantChatListView extends ConsumerWidget {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: isNeedReply ? const Color(0xFFFF5722).withOpacity(0.5) : Colors.transparent, width: 1.5),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10)],
+            border: Border.all(
+              color: isNeedReply
+                  ? const Color(0xFFFF5722).withOpacity(0.5)
+                  : Colors.transparent,
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10)
+            ],
           ),
           child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             leading: CircleAvatar(
               radius: 24,
               backgroundColor: const Color(0xFFFF5722).withOpacity(0.12),
               child: Text(
-                lastMsg.customerName.isNotEmpty ? lastMsg.customerName[0].toUpperCase() : 'K',
-                style: const TextStyle(color: Color(0xFFFF5722), fontWeight: FontWeight.w900, fontSize: 18),
+                lastMsg.customerName.isNotEmpty
+                    ? lastMsg.customerName[0].toUpperCase()
+                    : 'K',
+                style: const TextStyle(
+                  color: Color(0xFFFF5722),
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
+                ),
               ),
             ),
             title: Row(
@@ -486,12 +684,14 @@ class RestaurantChatListView extends ConsumerWidget {
                 Expanded(
                   child: Text(
                     '${lastMsg.customerName} (${lastMsg.roomId.split('_')[0]})',
-                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w800, fontSize: 15),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                Text(lastMsg.createdAt, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                Text(lastMsg.createdAt,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
               ],
             ),
             subtitle: Padding(
@@ -500,21 +700,37 @@ class RestaurantChatListView extends ConsumerWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      isNeedReply ? 'Khách: ${lastMsg.content}' : 'Bạn: ${lastMsg.content}',
+                      isNeedReply
+                          ? 'Khách: ${lastMsg.content}'
+                          : 'Bạn: ${lastMsg.content}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontWeight: isNeedReply ? FontWeight.bold : FontWeight.normal,
-                        color: isNeedReply ? const Color(0xFF1A1D26) : Colors.grey[600],
+                        fontWeight:
+                            isNeedReply ? FontWeight.bold : FontWeight.normal,
+                        color: isNeedReply
+                            ? const Color(0xFF1A1D26)
+                            : Colors.grey[600],
                       ),
                     ),
                   ),
                   if (isNeedReply)
                     Container(
                       margin: const EdgeInsets.only(left: 8),
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(color: const Color(0xFFFF5722), borderRadius: BorderRadius.circular(10)),
-                      child: const Text('Mới', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF5722),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Text(
+                        'Mới',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                 ],
               ),
