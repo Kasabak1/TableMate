@@ -1,14 +1,18 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:str/main.dart';
 import 'package:str/core/database/app_database.dart';
 import 'package:str/features/home/screens/main_dashboard_screen.dart';
+import 'package:str/features/staff/providers/staff_provider.dart'
+    show isSameRestaurantName;
 
 SupabaseClient get _supabase => Supabase.instance.client;
 
-// Model tin nhắn trò chuyện
+// Model tin nhắn trò chuyện (TC17)
 class ChatMessage {
   final String id,
       roomId,
@@ -30,8 +34,11 @@ class ChatMessage {
     required this.createdAt,
   });
 
-  Map<String, dynamic> toSupabaseMap() => {
-        'id': id,
+  String get dedupeSignature =>
+      '${roomId.trim().toLowerCase()}|${senderRole.trim().toUpperCase()}|${content.trim()}|${createdAt.trim()}';
+
+  Map<String, dynamic> toSupabaseMap({bool includeId = true}) => {
+        if (includeId) 'id': id,
         'room_id': roomId,
         'restaurant_name': restaurantName,
         'customer_name': customerName,
@@ -53,44 +60,91 @@ class ChatMessage {
       );
 }
 
-// Quản lý tin nhắn thời gian thực trên Supabase
+// Quản lý tin nhắn thời gian thực trên Supabase + SharedPreferences (TC17)
 class ChatNotifier extends StateNotifier<List<ChatMessage>> {
+  static const String _prefsChatKey = 'str_chat_messages_v2';
   Timer? _syncTimer;
+  bool _isSending = false;
+  List<ChatMessage> _localCache = [];
 
   ChatNotifier() : super([]) {
     _initRealtimeChat();
   }
 
-  void _initRealtimeChat() {
+  Future<void> _initRealtimeChat() async {
+    await _loadLocalMessages();
     if (!isSupabaseConfigured) return;
-    fetchMessages();
-    _syncTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      fetchMessages();
+    await fetchMessages();
+    _syncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!_isSending) {
+        fetchMessages();
+      }
     });
   }
 
-  // Tải tin nhắn từ Supabase
-  Future<void> fetchMessages() async {
+  Future<void> _loadLocalMessages() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_prefsChatKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw) as List<dynamic>;
+        _localCache = decoded
+            .map((r) =>
+                ChatMessage.fromSupabaseMap(Map<String, dynamic>.from(r as Map)))
+            .toList();
+        if (mounted) {
+          state = [..._localCache];
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveLocalMessages(List<ChatMessage> messages) async {
+    _localCache = messages;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _prefsChatKey,
+        jsonEncode(messages.map((m) => m.toSupabaseMap()).toList()),
+      );
+    } catch (_) {}
+  }
+
+  // Tải và hợp nhất tin nhắn từ Supabase + bộ nhớ đệm
+  Future<void> fetchMessages({bool force = false}) async {
     if (!isSupabaseConfigured) return;
+    if (_isSending && !force) return;
     try {
       final res = await _supabase
           .from('chat_messages')
           .select()
-          .order('id', ascending: true);
-      final list = (res as List<dynamic>)
+          .order('id', ascending: true)
+          .timeout(const Duration(seconds: 5));
+      final cloudList = (res as List<dynamic>)
           .map((r) =>
               ChatMessage.fromSupabaseMap(Map<String, dynamic>.from(r as Map)))
           .toList();
-      if (mounted) {
-        state = list;
+
+      final seenSigs = <String>{};
+      final merged = <ChatMessage>[];
+
+      for (final msg in [...cloudList, ..._localCache]) {
+        if (seenSigs.add(msg.dedupeSignature)) {
+          merged.add(msg);
+        }
+      }
+
+      if (mounted && (!_isSending || force)) {
+        state = merged;
+        await _saveLocalMessages(merged);
       }
     } catch (e) {
       debugPrint('Lỗi tải tin nhắn: $e');
     }
   }
 
-  // Gửi tin nhắn mới
-  Future<void> sendMessage({
+  // Gửi tin nhắn mới (đảm bảo cả Khách và Phục vụ đều nhận được tức thì)
+  Future<bool> sendMessage({
     required String roomId,
     required String restaurantName,
     required String customerName,
@@ -99,31 +153,54 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     required String content,
   }) async {
     final text = content.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty) return false;
 
+    _isSending = true;
     final now = TimeOfDay.now();
     final timeStr =
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
     final newMsg = ChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
-      roomId: roomId,
-      restaurantName: restaurantName,
-      customerName: customerName,
-      senderRole: senderRole,
-      senderName: senderName,
+      roomId: roomId.trim(),
+      restaurantName: restaurantName.trim(),
+      customerName: customerName.trim().isNotEmpty
+          ? customerName.trim()
+          : 'Khách hàng',
+      senderRole: senderRole.trim(),
+      senderName: senderName.trim(),
       content: text,
       createdAt: timeStr,
     );
 
-    state = [...state, newMsg];
+    final updated = [...state, newMsg];
+    state = updated;
+    await _saveLocalMessages(updated);
 
-    if (!isSupabaseConfigured) return;
+    if (!isSupabaseConfigured) {
+      _isSending = false;
+      return true;
+    }
+
     try {
-      await _supabase.from('chat_messages').insert(newMsg.toSupabaseMap());
-      await fetchMessages();
+      try {
+        await _supabase
+            .from('chat_messages')
+            .insert(newMsg.toSupabaseMap(includeId: true))
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        await _supabase
+            .from('chat_messages')
+            .insert(newMsg.toSupabaseMap(includeId: false))
+            .timeout(const Duration(seconds: 5));
+      }
+      await fetchMessages(force: true);
+      return true;
     } catch (e) {
-      debugPrint('Lỗi gửi tin nhắn: $e');
+      debugPrint('Lỗi gửi tin nhắn lên Supabase (đã lưu cục bộ): $e');
+      return false;
+    } finally {
+      _isSending = false;
     }
   }
 
@@ -139,7 +216,7 @@ final chatProvider =
   return ChatNotifier();
 });
 
-// Màn hình phòng chat chi tiết
+// Màn hình phòng chat chi tiết giữa Khách hàng và Phục vụ/Nhà hàng
 class ChatRoomScreen extends ConsumerStatefulWidget {
   final String roomId,
       restaurantName,
@@ -167,6 +244,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   final _scrollController = ScrollController();
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(chatProvider.notifier).fetchMessages(force: true);
+    });
+  }
+
+  @override
   void dispose() {
     _msgController.dispose();
     _scrollController.dispose();
@@ -174,11 +259,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   // Xử lý gửi tin nhắn trong phòng
-  void _handleSend([String? quickText]) {
-    final text = quickText ?? _msgController.text;
-    if (text.trim().isEmpty) return;
+  Future<void> _handleSend([String? quickText]) async {
+    final text = (quickText ?? _msgController.text).trim();
+    if (text.isEmpty) return;
 
-    ref.read(chatProvider.notifier).sendMessage(
+    if (quickText == null) _msgController.clear();
+
+    await ref.read(chatProvider.notifier).sendMessage(
           roomId: widget.roomId,
           restaurantName: widget.restaurantName,
           customerName: widget.customerName,
@@ -186,8 +273,6 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           senderName: widget.currentSenderName,
           content: text,
         );
-
-    if (quickText == null) _msgController.clear();
 
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_scrollController.hasClients) {
@@ -203,8 +288,15 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   @override
   Widget build(BuildContext context) {
     final allMessages = ref.watch(chatProvider);
-    final roomMessages =
-        allMessages.where((m) => m.roomId == widget.roomId).toList();
+    final roomMessages = allMessages.where((m) {
+      if (m.roomId.trim().toLowerCase() ==
+          widget.roomId.trim().toLowerCase()) {
+        return true;
+      }
+      return isSameRestaurantName(m.restaurantName, widget.restaurantName) &&
+          m.customerName.trim().toLowerCase() ==
+              widget.customerName.trim().toLowerCase();
+    }).toList();
 
     final List<String> quickReplies = widget.currentRole == 'CUSTOMER'
         ? [
@@ -259,6 +351,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Tải lại tin nhắn',
+            icon: const Icon(Icons.refresh_rounded, size: 20),
+            onPressed: () =>
+                ref.read(chatProvider.notifier).fetchMessages(force: true),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -361,8 +461,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               itemBuilder: (context, index) {
                 return ActionChip(
                   backgroundColor: Colors.white,
-                  side:
-                      BorderSide(color: const Color(0xFFFF5722).withOpacity(0.3)),
+                  side: BorderSide(
+                      color: const Color(0xFFFF5722).withOpacity(0.3)),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(20)),
                   label: Text(
@@ -442,15 +542,20 @@ class CustomerChatListView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final profile = ref.watch(userProfileProvider);
     final currentUser = ref.watch(currentUserProvider);
-    final myPhone = currentUser?.phone ?? profile.phone;
+    final rawPhone = (currentUser != null && currentUser.phone.trim().isNotEmpty)
+        ? currentUser.phone.trim()
+        : profile.phone.trim();
+    final myPhone = rawPhone.isNotEmpty ? rawPhone : 'khach';
     final myName = (currentUser != null && currentUser.name.isNotEmpty)
         ? currentUser.name
         : (profile.name.isNotEmpty ? profile.name : 'Khách hàng');
 
     final allMessages = ref.watch(chatProvider);
-    final myMessages = allMessages
-        .where((m) => myPhone.isNotEmpty && m.roomId.startsWith(myPhone))
-        .toList();
+    final myMessages = allMessages.where((m) {
+      if (m.roomId.startsWith('${myPhone}_')) return true;
+      return m.customerName.trim().toLowerCase() ==
+          myName.trim().toLowerCase();
+    }).toList();
 
     final Map<String, ChatMessage> latestByRestaurant = {};
     for (final msg in myMessages) {
@@ -600,19 +705,24 @@ class CustomerChatListView extends ConsumerWidget {
   }
 }
 
-// Danh sách hội thoại của nhà hàng
+// Danh sách hội thoại của nhà hàng (Phục vụ & Quản lý - TC17, TC37)
 class RestaurantChatListView extends ConsumerWidget {
   final String staffName;
   const RestaurantChatListView({super.key, required this.staffName});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final myRestaurant = ref.watch(adminRestaurantNameProvider);
+    final currentUser = ref.watch(currentUserProvider);
+    final adminRes = ref.watch(adminRestaurantNameProvider);
+    final myRestaurant = adminRes.isNotEmpty
+        ? adminRes
+        : (currentUser?.restaurantName.trim() ?? '');
 
     final allMessages = ref.watch(chatProvider);
     final restaurantMessages = allMessages
         .where((m) =>
-            myRestaurant.isNotEmpty && m.restaurantName == myRestaurant)
+            myRestaurant.isEmpty ||
+            isSameRestaurantName(m.restaurantName, myRestaurant))
         .toList();
 
     final Map<String, ChatMessage> latestByRoom = {};
@@ -630,7 +740,7 @@ class RestaurantChatListView extends ConsumerWidget {
             const SizedBox(height: 16),
             Text(
               myRestaurant.isEmpty
-                  ? 'Vui lòng thiết lập Tên nhà hàng trước.'
+                  ? 'Chưa có tin nhắn nào từ khách hàng.'
                   : 'Chưa có tin nhắn nào gửi tới $myRestaurant.',
               style: const TextStyle(color: Colors.grey),
             ),
@@ -741,7 +851,9 @@ class RestaurantChatListView extends ConsumerWidget {
                 MaterialPageRoute(
                   builder: (_) => ChatRoomScreen(
                     roomId: lastMsg.roomId,
-                    restaurantName: myRestaurant,
+                    restaurantName: myRestaurant.isNotEmpty
+                        ? myRestaurant
+                        : lastMsg.restaurantName,
                     customerName: lastMsg.customerName,
                     currentRole: 'RESTAURANT',
                     currentSenderName: staffName,

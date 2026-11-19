@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -23,6 +24,8 @@ class WaiterView extends ConsumerWidget {
     final currentUser = ref.watch(currentUserProvider);
     final myRestaurant = currentUser?.restaurantName ?? '';
     final allMessages = ref.watch(chatProvider);
+    ref.watch(realRestaurantListProvider);
+    ref.watch(restaurantBankProvider);
 
     final restaurantMessages = allMessages
         .where((m) => myRestaurant.isEmpty || m.restaurantName == myRestaurant)
@@ -33,6 +36,13 @@ class WaiterView extends ConsumerWidget {
     }
     final int unreadChatCount =
         latestByRoom.values.where((m) => m.senderRole == 'CUSTOMER').length;
+
+    final allTables = ref.watch(tableListProvider);
+    final int needPaymentCount = allTables
+        .where((t) =>
+            t.state == TableState.needPayment &&
+            (myRestaurant.isEmpty || t.restaurantName == myRestaurant))
+        .length;
 
     return DefaultTabController(
       length: 4,
@@ -50,8 +60,17 @@ class WaiterView extends ConsumerWidget {
               labelStyle:
                   const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
               tabs: [
-                const Tab(
-                    icon: Icon(Icons.grid_view_rounded), text: 'Sơ đồ bàn'),
+                Tab(
+                  icon: Badge(
+                    isLabelVisible: needPaymentCount > 0,
+                    label: Text('$needPaymentCount'),
+                    backgroundColor: const Color(0xFFE65100),
+                    child: const Icon(Icons.grid_view_rounded),
+                  ),
+                  text: needPaymentCount > 0
+                      ? 'Sơ đồ bàn ($needPaymentCount gọi TT)'
+                      : 'Sơ đồ bàn',
+                ),
                 Tab(
                   icon: Badge(
                     isLabelVisible: pendingBookingCount > 0,
@@ -86,7 +105,7 @@ class WaiterView extends ConsumerWidget {
               children: [
                 _buildTableMapTab(context, ref, myRestaurant),
                 _buildReservationManagementTab(context, ref, myRestaurant),
-                _buildReadyToServeTab(context, ref),
+                _buildReadyToServeTab(context, ref, myRestaurant),
                 const RestaurantChatListView(staffName: 'NV Phục vụ'),
               ],
             ),
@@ -99,11 +118,29 @@ class WaiterView extends ConsumerWidget {
   // Sơ đồ bàn ăn
   Widget _buildTableMapTab(
       BuildContext context, WidgetRef ref, String myRestaurant) {
-    final tables = ref.watch(tableListProvider);
-    final orders = ref.watch(kitchenOrdersProvider);
+    final allTables = ref.watch(tableListProvider);
+    final matchedTables = allTables
+        .where((t) =>
+            myRestaurant.isEmpty ||
+            isSameRestaurantName(t.restaurantName, myRestaurant))
+        .toList();
+    final tables = matchedTables.isNotEmpty
+        ? matchedTables
+        : (myRestaurant.isEmpty
+            ? allTables.where((t) => t.restaurantName.isEmpty).toList()
+            : <RestaurantTable>[]);
+
+    final orders = ref
+        .watch(kitchenOrdersProvider)
+        .where((o) =>
+            myRestaurant.isEmpty ||
+            isSameRestaurantName(o.restaurantName, myRestaurant))
+        .toList();
     final reservations = ref
         .watch(reservationProvider)
-        .where((r) => myRestaurant.isEmpty || r.restaurantName == myRestaurant)
+        .where((r) =>
+            myRestaurant.isEmpty ||
+            isSameRestaurantName(r.restaurantName, myRestaurant))
         .toList();
 
     if (tables.isEmpty) {
@@ -136,6 +173,9 @@ class WaiterView extends ConsumerWidget {
       );
     }
 
+    final needPaymentTables =
+        tables.where((t) => t.state == TableState.needPayment).toList();
+
     return Column(
       children: [
         Container(
@@ -154,6 +194,96 @@ class WaiterView extends ConsumerWidget {
             ],
           ),
         ),
+        if (needPaymentTables.isNotEmpty)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF8E1),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.orange.shade400, width: 1.5),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.notifications_active_rounded,
+                        color: Color(0xFFE65100), size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Khách đang gọi thanh toán (${needPaymentTables.length} bàn)',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13.5,
+                          color: Color(0xFFE65100),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ...needPaymentTables.map((t) {
+                  final tOrders =
+                      orders.where((o) => o.tableNumber == t.number).toList();
+                  final tBill = tOrders.fold<int>(
+                    0,
+                    (sum, ord) =>
+                        sum +
+                        ord.items
+                            .fold<int>(0, (s, i) => s + (i.price * i.quantity)),
+                  );
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '• ${t.number}: ${formatCurrency(tBill)}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                              color: Color(0xFF1A1D26),
+                            ),
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFFF5722),
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size(120, 32),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.qr_code_2_rounded, size: 16),
+                          label: const Text(
+                            'Đưa mã QR Thu tiền',
+                            style: TextStyle(
+                                fontSize: 11.5, fontWeight: FontWeight.bold),
+                          ),
+                          onPressed: () => _showCheckoutInvoiceDialog(
+                            context,
+                            ref,
+                            t,
+                            tOrders,
+                            tBill,
+                            myRestaurant.isNotEmpty
+                                ? myRestaurant
+                                : t.restaurantName,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
         Expanded(
           child: GridView.builder(
             padding: const EdgeInsets.all(16),
@@ -505,7 +635,12 @@ class WaiterView extends ConsumerWidget {
   // Hộp thoại gán bàn trống cho đơn đặt trước
   void _showAssignTableDialog(
       BuildContext context, WidgetRef ref, Reservation res) {
-    final allTables = ref.read(tableListProvider);
+    final allTables = ref
+        .read(tableListProvider)
+        .where((t) =>
+            res.restaurantName.isEmpty ||
+            t.restaurantName == res.restaurantName)
+        .toList();
     final availableTables = allTables
         .where((t) =>
             t.state == TableState.empty || t.number == res.assignedTable)
@@ -555,12 +690,18 @@ class WaiterView extends ConsumerWidget {
                                 ref
                                     .read(tableListProvider.notifier)
                                     .setTableState(
-                                        res.assignedTable!, TableState.empty);
+                                      res.assignedTable!,
+                                      TableState.empty,
+                                      restaurantName: res.restaurantName,
+                                    );
                               }
                               ref
                                   .read(reservationProvider.notifier)
                                   .assignTableToReservation(
-                                      res.id, table.number);
+                                    res.id,
+                                    table.number,
+                                    restaurantName: res.restaurantName,
+                                  );
                               Navigator.pop(context);
                               ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
@@ -586,24 +727,28 @@ class WaiterView extends ConsumerWidget {
 
   // Bảng thao tác chi tiết của bàn ăn
   void _showTableActionSheet(
-    BuildContext context,
-    WidgetRef ref,
+    BuildContext parentContext,
+    WidgetRef parentRef,
     RestaurantTable table,
     Reservation? activeRes,
     String myRestaurant,
   ) {
     showModalBottomSheet(
-      context: context,
+      context: parentContext,
       isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (context) {
+      builder: (sheetContext) {
         return Consumer(
-          builder: (context, ref, _) {
-            final allOrders = ref.watch(kitchenOrdersProvider);
+          builder: (consumerContext, sheetRef, _) {
+            final allOrders = sheetRef.watch(kitchenOrdersProvider);
             final tableOrders = allOrders
-                .where((o) => o.tableNumber == table.number)
+                .where((o) =>
+                    o.tableNumber.trim().toLowerCase() ==
+                        table.number.trim().toLowerCase() &&
+                    (myRestaurant.isEmpty ||
+                        isSameRestaurantName(o.restaurantName, myRestaurant)))
                 .toList();
 
             int totalBill = 0;
@@ -717,9 +862,9 @@ class WaiterView extends ConsumerWidget {
                         icon: const Icon(Icons.add_shopping_cart),
                         label: const Text('Gọi thêm món'),
                         onPressed: () {
-                          Navigator.pop(context);
+                          Navigator.pop(sheetContext);
                           _showWaiterOrderDialog(
-                              context, ref, table.number, myRestaurant);
+                              parentContext, parentRef, table.number, myRestaurant);
                         },
                       ),
                       if (table.state == TableState.empty ||
@@ -733,11 +878,14 @@ class WaiterView extends ConsumerWidget {
                               ? 'Nhận bàn'
                               : 'Mở bàn'),
                           onPressed: () {
-                            ref
+                            parentRef
                                 .read(tableListProvider.notifier)
                                 .setTableState(
-                                    table.number, TableState.occupied);
-                            Navigator.pop(context);
+                                  table.number,
+                                  TableState.occupied,
+                                  restaurantName: myRestaurant,
+                                );
+                            Navigator.pop(sheetContext);
                           },
                         ),
                       if (table.state == TableState.occupied ||
@@ -750,10 +898,10 @@ class WaiterView extends ConsumerWidget {
                           icon: const Icon(Icons.receipt_long_rounded),
                           label: const Text('Xuất Hóa đơn & QR Thu tiền'),
                           onPressed: () {
-                            Navigator.pop(context);
+                            Navigator.pop(sheetContext);
                             _showCheckoutInvoiceDialog(
-                              context,
-                              ref,
+                              parentContext,
+                              parentRef,
                               table,
                               tableOrders,
                               totalBill,
@@ -767,21 +915,46 @@ class WaiterView extends ConsumerWidget {
                               foregroundColor: Colors.redAccent),
                           icon: const Icon(Icons.cleaning_services),
                           label: const Text('Dọn bàn nhanh'),
-                          onPressed: () {
+                          onPressed: () async {
+                            final effectiveRes = myRestaurant.isNotEmpty
+                                ? myRestaurant
+                                : table.restaurantName;
+                            final orderNotifier = sheetRef
+                                .read(kitchenOrdersProvider.notifier);
+                            final tableNotifier =
+                                sheetRef.read(tableListProvider.notifier);
+                            final resNotifier =
+                                sheetRef.read(reservationProvider.notifier);
+                            Navigator.pop(sheetContext);
                             if (totalBill > 0) {
-                              ref.read(settledRevenueProvider.notifier).state +=
-                                  totalBill;
+                              await orderNotifier.settleOrdersForTable(
+                                table.number,
+                                restaurantName: effectiveRes,
+                                fallbackAmount: totalBill,
+                              );
+                            } else {
+                              await orderNotifier.clearOrdersForTable(
+                                table.number,
+                                restaurantName: effectiveRes,
+                              );
                             }
-                            ref
-                                .read(tableListProvider.notifier)
-                                .setTableState(table.number, TableState.empty);
-                            ref
-                                .read(kitchenOrdersProvider.notifier)
-                                .clearOrdersForTable(table.number);
-                            Navigator.pop(context);
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                                content: Text('Đã dọn sạch ${table.number}!'),
-                                backgroundColor: Colors.green));
+                            await tableNotifier.setTableState(
+                              table.number,
+                              TableState.empty,
+                              restaurantName: effectiveRes,
+                            );
+                            await resNotifier.completeReservationForTable(
+                              table.number,
+                              restaurantName: effectiveRes,
+                            );
+                            if (parentContext.mounted) {
+                              ScaffoldMessenger.of(parentContext).showSnackBar(
+                                SnackBar(
+                                  content: Text('Đã dọn sạch ${table.number}!'),
+                                  backgroundColor: Colors.green,
+                                ),
+                              );
+                            }
                           },
                         ),
                     ],
@@ -795,184 +968,334 @@ class WaiterView extends ConsumerWidget {
     );
   }
 
-  // Xuất hóa đơn thanh toán và tạo mã VietQR
+  // Xuất hóa đơn thanh toán, kiểm tra tài khoản ngân hàng (TC25) và tự động nhận biết giao dịch VietQR (TC26, TC27)
   void _showCheckoutInvoiceDialog(
-    BuildContext context,
-    WidgetRef ref,
+    BuildContext parentContext,
+    WidgetRef parentRef,
     RestaurantTable table,
     List<KitchenOrder> tableOrders,
     int totalBill,
     String myRestaurant,
   ) {
-    ref
-        .read(tableListProvider.notifier)
-        .setTableState(table.number, TableState.needPayment);
+    final effectiveRes =
+        myRestaurant.isNotEmpty ? myRestaurant : table.restaurantName;
+    parentRef.read(tableListProvider.notifier).setTableState(
+          table.number,
+          TableState.needPayment,
+          restaurantName: effectiveRes,
+        );
 
-    String paymentMethod = 'QR';
+    final allRestaurants = parentRef.read(realRestaurantListProvider);
+    final bankInfo = parentRef
+        .read(restaurantBankProvider.notifier)
+        .getBankForRestaurant(
+          restaurantName: effectiveRes,
+          restaurants: allRestaurants,
+        );
+    final bool hasValidBank = bankInfo != null && bankInfo.isConfigured;
+
+    String paymentMethod = hasValidBank ? 'QR' : 'CASH';
+    bool isCompleting = false;
+    bool isAutoDetected = false;
+    Timer? autoPollTimer;
+
     final displayRestaurant =
-        myRestaurant.isNotEmpty ? myRestaurant : 'Nhà hàng Smart Ordering';
+        effectiveRes.isNotEmpty ? effectiveRes : 'Nhà hàng Smart Ordering';
     final now = DateTime.now();
     final timeStr =
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')} - ${now.day}/${now.month}/${now.year}';
 
-    final allRestaurants = ref.read(realRestaurantListProvider);
-    final bankInfo = ref
-        .read(restaurantBankProvider.notifier)
-        .getBankForRestaurant(
-          restaurantName: myRestaurant,
-          restaurants: allRestaurants,
-        );
     final transferNote = '${table.number} thanh toan';
-    final qrPayload = bankInfo != null && bankInfo.isConfigured
+    final qrPayload = hasValidBank
         ? 'VIETQR|${bankInfo.bankId}|${bankInfo.accountNo}|${bankInfo.accountName}|AMOUNT:$totalBill|NOTE:$transferNote'
-        : 'VIETQR|$displayRestaurant|${table.number}|AMOUNT:$totalBill|TIME:$timeStr';
+        : '';
+
+    Future<void> completeSettlement(
+      BuildContext dialogContext,
+      WidgetRef dialogRef,
+      StateSetter setDialogState, {
+      required String methodLabel,
+      bool isAutomatic = false,
+    }) async {
+      if (isCompleting) return;
+      autoPollTimer?.cancel();
+      setDialogState(() {
+        isCompleting = true;
+        if (isAutomatic) isAutoDetected = true;
+      });
+      final orderNotifier = dialogRef.read(kitchenOrdersProvider.notifier);
+      final tableNotifier = dialogRef.read(tableListProvider.notifier);
+      final resNotifier = dialogRef.read(reservationProvider.notifier);
+
+      await orderNotifier.settleOrdersForTable(
+        table.number,
+        restaurantName: effectiveRes,
+        fallbackAmount: totalBill,
+        paymentMethod: methodLabel,
+      );
+      await tableNotifier.setTableState(
+        table.number,
+        TableState.empty,
+        restaurantName: effectiveRes,
+      );
+      await resNotifier.completeReservationForTable(
+        table.number,
+        restaurantName: effectiveRes,
+      );
+      if (dialogContext.mounted) {
+        Navigator.of(dialogContext).pop();
+      }
+      if (parentContext.mounted) {
+        ScaffoldMessenger.of(parentContext).showSnackBar(
+          SnackBar(
+            content: Text(
+              isAutomatic
+                  ? 'Hệ thống tự động nhận biết giao dịch VietQR ${formatCurrency(totalBill)} thành công! Đã cộng doanh thu ca và làm trống ${table.number}.'
+                  : 'Đã chốt thanh toán ${formatCurrency(totalBill)} vào Doanh thu ca và làm trống ${table.number}!',
+            ),
+            backgroundColor: Colors.green[700],
+          ),
+        );
+      }
+    }
 
     showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          return Dialog(
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.green.shade50,
-                      shape: BoxShape.circle,
+      context: parentContext,
+      builder: (dialogContext) => Consumer(
+        builder: (consumerCtx, dialogRef, _) => StatefulBuilder(
+          builder: (stateCtx, setDialogState) {
+            final liveOrders = dialogRef
+                .watch(kitchenOrdersProvider)
+                .where((o) =>
+                    o.tableNumber.trim().toLowerCase() ==
+                        table.number.trim().toLowerCase() &&
+                    (effectiveRes.isEmpty ||
+                        isSameRestaurantName(o.restaurantName, effectiveRes)))
+                .toList();
+
+            if (tableOrders.isNotEmpty &&
+                liveOrders.isEmpty &&
+                !isCompleting &&
+                !isAutoDetected) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (dialogContext.mounted) {
+                  Navigator.of(dialogContext).pop();
+                }
+                if (parentContext.mounted) {
+                  ScaffoldMessenger.of(parentContext).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                          'Hệ thống tự động nhận biết Khách tại ${table.number} đã chuyển khoản VietQR (${formatCurrency(totalBill)})!'),
+                      backgroundColor: const Color(0xFF00C853),
                     ),
-                    child: Icon(Icons.receipt_long_rounded,
-                        color: Colors.green.shade700, size: 32),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    displayRestaurant.toUpperCase(),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w900,
-                      fontSize: 16,
-                      color: Color(0xFF1A1D26),
+                  );
+                }
+              });
+            }
+
+            return Dialog(
+              backgroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24)),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade50,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.receipt_long_rounded,
+                          color: Colors.green.shade700, size: 32),
                     ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'PHIẾU THANH TOÁN • ${table.number.toUpperCase()}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                      color: Color(0xFFFF5722),
+                    const SizedBox(height: 8),
+                    Text(
+                      displayRestaurant.toUpperCase(),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                        color: Color(0xFF1A1D26),
+                      ),
                     ),
-                  ),
-                  Text(
-                    'Giờ in: $timeStr',
-                    style: const TextStyle(fontSize: 11, color: Colors.grey),
-                  ),
-                  const Divider(height: 24, thickness: 1),
-                  if (tableOrders.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
-                      child: Text('Chưa có món ăn nào trong hóa đơn.'),
-                    )
-                  else
-                    ...tableOrders.expand((o) => o.items).map(
-                          (item) => Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    '${item.dishName} x${item.quantity}',
+                    const SizedBox(height: 2),
+                    Text(
+                      'PHIẾU THANH TOÁN • ${table.number.toUpperCase()}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: Color(0xFFFF5722),
+                      ),
+                    ),
+                    Text(
+                      'Giờ in: $timeStr',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                    const Divider(height: 24, thickness: 1),
+                    if (tableOrders.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Text('Chưa có món ăn nào trong hóa đơn.'),
+                      )
+                    else
+                      ...tableOrders.expand((o) => o.items).map(
+                            (item) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      '${item.dishName} x${item.quantity}',
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                  ),
+                                  Text(
+                                    formatCurrency(item.price * item.quantity),
                                     style: const TextStyle(
                                         fontSize: 13,
-                                        fontWeight: FontWeight.w600),
+                                        fontWeight: FontWeight.bold),
                                   ),
-                                ),
-                                Text(
-                                  formatCurrency(item.price * item.quantity),
-                                  style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold),
+                                ],
+                              ),
+                            ),
+                          ),
+                    const Divider(height: 24, thickness: 1),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'TỔNG THANH TOÁN:',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w900, fontSize: 15),
+                        ),
+                        Text(
+                          formatCurrency(totalBill),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 20,
+                            color: Color(0xFFFF5722),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('Quét QR Chuyển khoản'),
+                            selected: paymentMethod == 'QR',
+                            selectedColor: Colors.green.shade100,
+                            onSelected: (_) =>
+                                setDialogState(() => paymentMethod = 'QR'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Text('Tiền mặt tại bàn'),
+                            selected: paymentMethod == 'CASH',
+                            selectedColor: Colors.orange.shade100,
+                            onSelected: (_) =>
+                                setDialogState(() => paymentMethod = 'CASH'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    if (!hasValidBank)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0xFFFECACA)),
+                        ),
+                        child: Column(
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.warning_amber_rounded,
+                                    color: Color(0xFFDC2626), size: 24),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Chưa khai báo Tài khoản Ngân hàng!',
+                                    style: TextStyle(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w900,
+                                      color: Color(0xFFDC2626),
+                                    ),
+                                  ),
                                 ),
                               ],
                             ),
-                          ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Không thể tạo mã QR chuyển khoản hợp lệ do nhà hàng "$displayRestaurant" chưa nhập số tài khoản ngân hàng.\n• Hướng dẫn: Vui lòng thu ${formatCurrency(totalBill)} TIỀN MẶT trực tiếp từ khách tại ${table.number}.',
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                color: Color(0xFF0F172A),
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
                         ),
-                  const Divider(height: 24, thickness: 1),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'TỔNG THANH TOÁN:',
-                        style: TextStyle(
-                            fontWeight: FontWeight.w900, fontSize: 15),
-                      ),
-                      Text(
-                        formatCurrency(totalBill),
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w900,
-                          fontSize: 20,
-                          color: Color(0xFFFF5722),
+                      )
+                    else if (paymentMethod == 'QR')
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF6F7FB),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.green.shade200),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ChoiceChip(
-                          label: const Text('Quét QR Chuyển khoản'),
-                          selected: paymentMethod == 'QR',
-                          selectedColor: Colors.green.shade100,
-                          onSelected: (_) =>
-                              setDialogState(() => paymentMethod = 'QR'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: ChoiceChip(
-                          label: const Text('Tiền mặt tại bàn'),
-                          selected: paymentMethod == 'CASH',
-                          selectedColor: Colors.orange.shade100,
-                          onSelected: (_) =>
-                              setDialogState(() => paymentMethod = 'CASH'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  if (paymentMethod == 'QR')
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF6F7FB),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.green.shade200),
-                      ),
-                      child: Column(
-                        children: [
-                          if (bankInfo != null && bankInfo.isConfigured) ...[
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.network(
-                                bankInfo.buildVietQrUrl(
-                                  amount: totalBill,
-                                  addInfo: transferNote,
-                                ),
-                                width: 195,
-                                height: 195,
-                                fit: BoxFit.contain,
-                                errorBuilder: (_, __, ___) => QrImageView(
-                                  data: qrPayload,
-                                  version: QrVersions.auto,
-                                  size: 165.0,
-                                  backgroundColor: Colors.white,
+                        child: Column(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: SizedBox(
+                                width: 185,
+                                height: 185,
+                                child: Image.network(
+                                  bankInfo.buildVietQrUrl(
+                                    amount: totalBill,
+                                    addInfo: transferNote,
+                                  ),
+                                  width: 185,
+                                  height: 185,
+                                  fit: BoxFit.contain,
+                                  loadingBuilder:
+                                      (context, child, loadingProgress) {
+                                    if (loadingProgress == null) {
+                                      return child;
+                                    }
+                                    return QrImageView(
+                                      data: qrPayload,
+                                      version: QrVersions.auto,
+                                      size: 185.0,
+                                      backgroundColor: Colors.white,
+                                    );
+                                  },
+                                  errorBuilder: (_, __, ___) => QrImageView(
+                                    data: qrPayload,
+                                    version: QrVersions.auto,
+                                    size: 185.0,
+                                    backgroundColor: Colors.white,
+                                  ),
                                 ),
                               ),
                             ),
@@ -995,119 +1318,179 @@ class WaiterView extends ConsumerWidget {
                                 color: Color(0xFF1A1D26),
                               ),
                             ),
-                          ] else ...[
-                            QrImageView(
-                              data: qrPayload,
-                              version: QrVersions.auto,
-                              size: 165.0,
-                              backgroundColor: Colors.white,
-                            ),
-                            const SizedBox(height: 8),
-                            const Text(
-                              'Chủ quán chưa cấu hình STK trong mục Hồ sơ Nhà hàng (Admin)',
+                            const SizedBox(height: 4),
+                            Text(
+                              'Số tiền: ${formatCurrency(totalBill)} • Nội dung: $transferNote',
                               textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Colors.deepOrange,
-                                fontWeight: FontWeight.w600,
+                              style: const TextStyle(
+                                  fontSize: 11, color: Colors.grey),
+                            ),
+                            const SizedBox(height: 10),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFDCFCE7),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                children: [
+                                  const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      SizedBox(
+                                        width: 12,
+                                        height: 12,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Color(0xFF16A34A),
+                                        ),
+                                      ),
+                                      SizedBox(width: 8),
+                                      Flexible(
+                                        child: Text(
+                                          'Đang tự động lắng nghe giao dịch VietQR...',
+                                          style: TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF16A34A),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: OutlinedButton.icon(
+                                      style: OutlinedButton.styleFrom(
+                                        backgroundColor: Colors.white,
+                                        foregroundColor:
+                                            const Color(0xFF16A34A),
+                                        side: const BorderSide(
+                                            color: Color(0xFF16A34A)),
+                                        minimumSize: const Size(0, 34),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 6),
+                                      ),
+                                      icon: const Icon(
+                                          Icons.bolt_rounded,
+                                          size: 16),
+                                      label: const Text(
+                                        'Tự động xác nhận tiền về VietQR',
+                                        style: TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.bold),
+                                      ),
+                                      onPressed: isCompleting
+                                          ? null
+                                          : () => completeSettlement(
+                                                dialogContext,
+                                                dialogRef,
+                                                setDialogState,
+                                                methodLabel: 'VIETQR_AUTO',
+                                                isAutomatic: true,
+                                              ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
-                          const SizedBox(height: 4),
-                          Text(
-                            'Số tiền: ${formatCurrency(totalBill)} • Nội dung: $transferNote',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.shade50,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.payments_outlined,
-                              color: Colors.deepOrange),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              'Vui lòng thu ${formatCurrency(totalBill)} tiền mặt từ khách tại ${table.number}.',
-                              style: const TextStyle(
-                                  fontSize: 13, fontWeight: FontWeight.w600),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text('Đóng'),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        flex: 2,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00C853),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                          ),
-                          icon: const Icon(Icons.check_circle_rounded, size: 18),
-                          label: const Text(
-                            'Đã thu tiền & Dọn bàn',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          onPressed: () {
-                            if (totalBill > 0) {
-                              ref.read(settledRevenueProvider.notifier).state +=
-                                  totalBill;
-                            }
-                            ref
-                                .read(tableListProvider.notifier)
-                                .setTableState(table.number, TableState.empty);
-                            ref
-                                .read(kitchenOrdersProvider.notifier)
-                                .clearOrdersForTable(table.number);
-                            Navigator.pop(ctx);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                    'Đã chốt thanh toán ${formatCurrency(totalBill)} và làm trống ${table.number}!'),
-                                backgroundColor: Colors.green[700],
+                      )
+                    else
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.shade50,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.payments_outlined,
+                                color: Colors.deepOrange),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Vui lòng thu ${formatCurrency(totalBill)} tiền mặt từ khách tại ${table.number}.',
+                                style: const TextStyle(
+                                    fontSize: 13, fontWeight: FontWeight.w600),
                               ),
-                            );
-                          },
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-                ],
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF6C7278),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                            ),
+                            onPressed: () {
+                              autoPollTimer?.cancel();
+                              Navigator.of(dialogContext).pop();
+                            },
+                            child: const Text('Đóng'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          flex: 2,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF00C853),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                            ),
+                            icon: isCompleting
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        color: Colors.white, strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.check_circle_rounded,
+                                    size: 18),
+                            label: const Text(
+                              'Đã thu tiền & Dọn bàn',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            onPressed: isCompleting
+                                ? null
+                                : () => completeSettlement(
+                                      dialogContext,
+                                      dialogRef,
+                                      setDialogState,
+                                      methodLabel:
+                                          hasValidBank ? paymentMethod : 'CASH',
+                                    ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
 
   // Hộp thoại gọi món hộ khách tại bàn
-  void _showWaiterOrderDialog(BuildContext context, WidgetRef ref,
+  void _showWaiterOrderDialog(BuildContext parentContext, WidgetRef parentRef,
       String tableNumber, String myRestaurant) {
     final allAvailableMenu =
-        ref.read(menuDbProvider).where((m) => m.isAvailable).toList();
+        parentRef.read(menuDbProvider).where((m) => m.isAvailable).toList();
     final filteredMenu = allAvailableMenu
         .where((m) => myRestaurant.isEmpty || m.restaurantName == myRestaurant)
         .toList();
@@ -1121,123 +1504,144 @@ class WaiterView extends ConsumerWidget {
     final noteCtrl = TextEditingController();
 
     showDialog(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
-              title: Text('Gọi món - $tableNumber',
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
-              content: SizedBox(
-                width: double.maxFinite,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (menuCatalog.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 16),
-                          child: Text(
-                              'Nhà hàng hiện chưa có món ăn nào trong thực đơn.'),
-                        ),
-                      ...menuCatalog.map((dish) {
-                        final name = dish['name'] as String;
-                        final price = dish['price'] as int;
-                        final qty = selectedQuantities[name] ?? 0;
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(name,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w600)),
-                          subtitle: Text(formatCurrency(price)),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.remove_circle_outline),
-                                onPressed: qty > 0
-                                    ? () => setDialogState(
-                                        () => selectedQuantities[name] = qty - 1)
-                                    : null,
-                              ),
-                              Text('$qty',
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16)),
-                              IconButton(
-                                icon: const Icon(Icons.add_circle,
-                                    color: Color(0xFF00C853)),
-                                onPressed: () => setDialogState(
-                                    () => selectedQuantities[name] = qty + 1),
-                              ),
-                            ],
+      context: parentContext,
+      builder: (dialogContext) {
+        return Consumer(
+          builder: (consumerCtx, dialogRef, _) => StatefulBuilder(
+            builder: (stateCtx, setDialogState) {
+              return AlertDialog(
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20)),
+                title: Text('Gọi món - $tableNumber',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                content: SizedBox(
+                  width: double.maxFinite,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (menuCatalog.isEmpty)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 16),
+                            child: Text(
+                                'Nhà hàng hiện chưa có món ăn nào trong thực đơn.'),
                           ),
-                        );
-                      }),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: noteCtrl,
-                        decoration: const InputDecoration(
-                            labelText: 'Ghi chú cho Bếp (Tùy chọn)',
-                            border: OutlineInputBorder()),
-                      ),
-                    ],
+                        ...menuCatalog.map((dish) {
+                          final name = dish['name'] as String;
+                          final price = dish['price'] as int;
+                          final qty = selectedQuantities[name] ?? 0;
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(name,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600)),
+                            subtitle: Text(formatCurrency(price)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.remove_circle_outline),
+                                  onPressed: qty > 0
+                                      ? () => setDialogState(() =>
+                                          selectedQuantities[name] = qty - 1)
+                                      : null,
+                                ),
+                                Text('$qty',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16)),
+                                IconButton(
+                                  icon: const Icon(Icons.add_circle,
+                                      color: Color(0xFF00C853)),
+                                  onPressed: () => setDialogState(
+                                      () => selectedQuantities[name] = qty + 1),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: noteCtrl,
+                          decoration: const InputDecoration(
+                              labelText: 'Ghi chú cho Bếp (Tùy chọn)',
+                              border: OutlineInputBorder()),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Hủy')),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFF5722),
-                      foregroundColor: Colors.white),
-                  onPressed: () {
-                    final List<OrderItem> itemsToSend = [];
-                    selectedQuantities.forEach((dishName, qty) {
-                      if (qty > 0) {
-                        final price = menuCatalog.firstWhere(
-                            (m) => m['name'] == dishName)['price'] as int;
-                        itemsToSend.add(OrderItem(
-                          id: '${DateTime.now().microsecondsSinceEpoch}_$dishName',
-                          dishName: dishName,
-                          quantity: qty,
-                          price: price,
-                          note: noteCtrl.text.trim(),
-                          status: DishStatus.pending,
-                        ));
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      child: const Text('Hủy')),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFFF5722),
+                        foregroundColor: Colors.white),
+                    onPressed: () {
+                      final List<OrderItem> itemsToSend = [];
+                      selectedQuantities.forEach((dishName, qty) {
+                        if (qty > 0) {
+                          final price = menuCatalog.firstWhere(
+                              (m) => m['name'] == dishName)['price'] as int;
+                          itemsToSend.add(OrderItem(
+                            id: '${DateTime.now().microsecondsSinceEpoch}_$dishName',
+                            dishName: dishName,
+                            quantity: qty,
+                            price: price,
+                            note: noteCtrl.text.trim(),
+                            status: DishStatus.pending,
+                          ));
+                        }
+                      });
+                      if (itemsToSend.isNotEmpty) {
+                        dialogRef
+                            .read(kitchenOrdersProvider.notifier)
+                            .addOrderFromWaiter(
+                              tableNumber,
+                              itemsToSend,
+                              restaurantName: myRestaurant,
+                            );
+                        dialogRef
+                            .read(tableListProvider.notifier)
+                            .setTableState(
+                              tableNumber,
+                              TableState.occupied,
+                              restaurantName: myRestaurant,
+                            );
+                        Navigator.of(dialogContext).pop();
+                        if (parentContext.mounted) {
+                          ScaffoldMessenger.of(parentContext).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                  'Đã gửi đơn của $tableNumber xuống Nhà Bếp!'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
                       }
-                    });
-                    if (itemsToSend.isNotEmpty) {
-                      ref
-                          .read(kitchenOrdersProvider.notifier)
-                          .addOrderFromWaiter(tableNumber, itemsToSend);
-                      ref
-                          .read(tableListProvider.notifier)
-                          .setTableState(tableNumber, TableState.occupied);
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                          content: Text(
-                              'Đã gửi đơn của $tableNumber xuống Nhà Bếp!'),
-                          backgroundColor: Colors.green));
-                    }
-                  },
-                  child: const Text('Gửi xuống Bếp'),
-                ),
-              ],
-            );
-          },
+                    },
+                    child: const Text('Gửi xuống Bếp'),
+                  ),
+                ],
+              );
+            },
+          ),
         );
       },
     );
   }
 
   // Danh sách món nấu xong chờ phục vụ bưng ra bàn
-  Widget _buildReadyToServeTab(BuildContext context, WidgetRef ref) {
-    final orders = ref.watch(kitchenOrdersProvider);
+  Widget _buildReadyToServeTab(
+      BuildContext context, WidgetRef ref, String myRestaurant) {
+    final orders = ref
+        .watch(kitchenOrdersProvider)
+        .where((o) =>
+            myRestaurant.isEmpty ||
+            isSameRestaurantName(o.restaurantName, myRestaurant))
+        .toList();
     final List<Map<String, dynamic>> readyItems = [];
     for (final order in orders) {
       for (final item in order.items) {

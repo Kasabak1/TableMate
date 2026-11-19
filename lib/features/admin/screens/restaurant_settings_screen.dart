@@ -73,7 +73,7 @@ class _RestaurantSettingsScreenState
   Widget build(BuildContext context) {
     final currentUser = ref.watch(currentUserProvider);
     final allRes = ref.watch(realRestaurantListProvider);
-    final bankMap = ref.watch(restaurantBankProvider);
+    ref.watch(restaurantBankProvider);
     final myRes =
         allRes.where((r) => r.ownerPhone == currentUser?.phone).firstOrNull;
 
@@ -121,23 +121,7 @@ class _RestaurantSettingsScreenState
           _bankAccountNoController.text = savedBank.accountNo;
           _bankAccountNameController.text = savedBank.accountName;
         }
-      }
-    } else {
-      if (_bankAccountNoController.text.isEmpty && bankMap.isNotEmpty) {
-        final savedBank = ref
-            .read(restaurantBankProvider.notifier)
-            .getBankForRestaurant(
-              restaurantName: _nameController.text.trim(),
-              ownerPhone: currentUser?.phone,
-              restaurants: allRes,
-            );
-        if (savedBank != null && savedBank.accountNo.isNotEmpty) {
-          if (_vietnamBanks.any((b) => b['id'] == savedBank.bankId)) {
-            _selectedBankId = savedBank.bankId;
-          }
-          _bankAccountNoController.text = savedBank.accountNo;
-          _bankAccountNameController.text = savedBank.accountName;
-        }
+        _isInit = true;
       }
     }
 
@@ -430,9 +414,21 @@ class _RestaurantSettingsScreenState
                     onChanged: (_) => setState(() {}),
                     decoration: InputDecoration(
                       labelText: 'Số tài khoản ngân hàng của quán',
-                      hintText: 'VD: 090123456789',
+                      hintText: 'Để trống nếu quán chỉ thu tiền mặt',
                       prefixIcon: Icon(Icons.credit_card_rounded,
                           color: Colors.green.shade700),
+                      suffixIcon: _bankAccountNoController.text.isNotEmpty
+                          ? IconButton(
+                              tooltip: 'Xóa tài khoản ngân hàng',
+                              icon: const Icon(Icons.clear_rounded, size: 18),
+                              onPressed: () {
+                                setState(() {
+                                  _bankAccountNoController.clear();
+                                  _bankAccountNameController.clear();
+                                });
+                              },
+                            )
+                          : null,
                       filled: true,
                       fillColor: const Color(0xFFF6F7FB),
                       border: OutlineInputBorder(
@@ -490,21 +486,36 @@ class _RestaurantSettingsScreenState
                           const SizedBox(height: 10),
                           ClipRRect(
                             borderRadius: BorderRadius.circular(12),
-                            child: Image.network(
-                              previewBankInfo.buildVietQrUrl(
-                                amount: 0,
-                                addInfo:
-                                    'Thanh toan ${_nameController.text.trim()}',
-                              ),
+                            child: SizedBox(
                               width: 170,
                               height: 170,
-                              fit: BoxFit.contain,
-                              errorBuilder: (_, __, ___) => QrImageView(
-                                data:
-                                    'VIETQR|$_selectedBankId|$previewAccountNo|$previewAccountName',
-                                version: QrVersions.auto,
-                                size: 150,
-                                backgroundColor: Colors.white,
+                              child: Image.network(
+                                previewBankInfo.buildVietQrUrl(
+                                  amount: 0,
+                                  addInfo:
+                                      'Thanh toan ${_nameController.text.trim()}',
+                                ),
+                                width: 170,
+                                height: 170,
+                                fit: BoxFit.contain,
+                                loadingBuilder:
+                                    (context, child, loadingProgress) {
+                                  if (loadingProgress == null) return child;
+                                  return QrImageView(
+                                    data:
+                                        'VIETQR|$_selectedBankId|$previewAccountNo|$previewAccountName',
+                                    version: QrVersions.auto,
+                                    size: 170,
+                                    backgroundColor: Colors.white,
+                                  );
+                                },
+                                errorBuilder: (_, __, ___) => QrImageView(
+                                  data:
+                                      'VIETQR|$_selectedBankId|$previewAccountNo|$previewAccountName',
+                                  version: QrVersions.auto,
+                                  size: 170,
+                                  backgroundColor: Colors.white,
+                                ),
                               ),
                             ),
                           ),

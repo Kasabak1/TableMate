@@ -39,6 +39,21 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
     'Đặc sản Việt',
     'Buffet Lẩu'
   ];
+
+  IconData _categoryIcon(String cat) {
+    switch (cat) {
+      case 'Lẩu & Thái':
+        return Icons.soup_kitchen_rounded;
+      case 'Món Âu':
+        return Icons.dinner_dining_rounded;
+      case 'Đặc sản Việt':
+        return Icons.ramen_dining_rounded;
+      case 'Buffet Lẩu':
+        return Icons.local_fire_department_rounded;
+      default:
+        return Icons.grid_view_rounded;
+    }
+  }
   final TextEditingController _searchCtrl = TextEditingController();
 
   @override
@@ -51,7 +66,10 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
   Widget build(BuildContext context) {
     final restaurants = ref.watch(realRestaurantListProvider);
     final currentUser = ref.watch(currentUserProvider);
-    final myPhone = currentUser?.phone ?? widget.profile.phone;
+    final rawPhone = (currentUser != null && currentUser.phone.trim().isNotEmpty)
+        ? currentUser.phone.trim()
+        : widget.profile.phone.trim();
+    final myPhone = rawPhone.isNotEmpty ? rawPhone : 'khach';
 
     final filteredList = restaurants.where((r) {
       if (r.status != 'APPROVED') return false;
@@ -72,60 +90,78 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
           // Thông tin chào mừng và vị trí
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Xin chào,',
-                      style: TextStyle(fontSize: 14, color: Color(0xFF6C7278))),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${widget.displayName} 👋',
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                      color: Color(0xFF1A1D26),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Xin chào,',
+                        style:
+                            TextStyle(fontSize: 13, color: Color(0xFF475569))),
+                    const SizedBox(height: 2),
+                    Text(
+                      widget.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF0F172A),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
               const SizedBox(width: 12),
-              Expanded(
-                child: GestureDetector(
-                  onTap: widget.onRefreshLocation,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      const Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
+              Flexible(
+                child: Material(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: widget.onRefreshLocation,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          Icon(Icons.my_location_rounded,
-                              color: Color(0xFF00897B), size: 14),
-                          SizedBox(width: 4),
+                          const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.my_location_rounded,
+                                  color: Color(0xFF0D9488), size: 14),
+                              SizedBox(width: 4),
+                              Text(
+                                'Vị trí của bạn',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: Color(0xFF0D9488),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
                           Text(
-                            'Vị trí của bạn',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF6C7278),
-                              fontWeight: FontWeight.w600,
+                            widget.currentAddress,
+                            textAlign: TextAlign.right,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF0F172A),
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        widget.currentAddress,
-                        textAlign: TextAlign.right,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF1A1D26),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -152,22 +188,34 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
               decoration: InputDecoration(
                 hintText: 'Tìm tên quán, món ăn, địa chỉ...',
                 hintStyle:
-                    const TextStyle(color: Color(0xFFA0A5BA), fontSize: 14),
+                    const TextStyle(color: Color(0xFF64748B), fontSize: 14),
                 prefixIcon: const Icon(Icons.search_rounded,
                     color: Color(0xFFFF5722)),
                 suffixIcon: _searchQuery.isNotEmpty
                     ? IconButton(
+                        tooltip: 'Xóa từ khóa',
                         icon: const Icon(Icons.clear_rounded,
-                            color: Colors.grey, size: 20),
+                            color: Color(0xFF475569), size: 20),
                         onPressed: () {
                           _searchCtrl.clear();
                           setState(() => _searchQuery = '');
                         },
                       )
                     : null,
+                filled: true,
+                fillColor: Colors.white,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(18),
-                  borderSide: BorderSide.none,
+                  borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide:
+                      const BorderSide(color: Color(0xFFFF5722), width: 1.6),
                 ),
                 contentPadding: const EdgeInsets.symmetric(vertical: 16),
               ),
@@ -175,9 +223,9 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
           ),
 
           // Bộ lọc danh mục ẩm thực
-          const SizedBox(height: 20),
+          const SizedBox(height: 18),
           SizedBox(
-            height: 40,
+            height: 44,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: _categories.length,
@@ -185,32 +233,54 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
               itemBuilder: (context, index) {
                 final cat = _categories[index];
                 final isSelected = _selectedCategory == cat;
-                return GestureDetector(
-                  onTap: () => setState(() => _selectedCategory = cat),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 18, vertical: 10),
-                    decoration: BoxDecoration(
-                      color:
-                          isSelected ? const Color(0xFFFF5722) : Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        if (isSelected)
-                          BoxShadow(
-                            color: const Color(0xFFFF5722).withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 4),
-                          )
-                      ],
-                    ),
-                    child: Text(
-                      cat,
-                      style: TextStyle(
-                        color:
-                            isSelected ? Colors.white : const Color(0xFF6C7278),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
+                return Material(
+                  color: isSelected ? const Color(0xFFFF5722) : Colors.white,
+                  borderRadius: BorderRadius.circular(22),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(22),
+                    onTap: () => setState(() => _selectedCategory = cat),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(
+                          color: isSelected
+                              ? const Color(0xFFFF5722)
+                              : const Color(0xFFE2E8F0),
+                        ),
+                        boxShadow: [
+                          if (isSelected)
+                            BoxShadow(
+                              color: const Color(0xFFFF5722).withOpacity(0.28),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            )
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _categoryIcon(cat),
+                            size: 16,
+                            color: isSelected
+                                ? Colors.white
+                                : const Color(0xFFFF5722),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            cat,
+                            style: TextStyle(
+                              color: isSelected
+                                  ? Colors.white
+                                  : const Color(0xFF0F172A),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -306,9 +376,10 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withOpacity(0.04),
             blurRadius: 20,
             offset: const Offset(0, 8),
           )
@@ -326,12 +397,29 @@ class _ExploreTabState extends ConsumerState<ExploreTab> {
                   height: 175,
                   width: double.infinity,
                   fit: BoxFit.cover,
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Container(
+                      height: 175,
+                      color: const Color(0xFFF1F5F9),
+                      child: const Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Color(0xFFFF5722),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
                   errorBuilder: (_, __, ___) => Container(
                     height: 175,
-                    color: Colors.orange[100],
+                    color: const Color(0xFFFFF3EE),
                     child: const Center(
                       child: Icon(Icons.restaurant,
-                          size: 50, color: Colors.deepOrange),
+                          size: 50, color: Color(0xFFFF5722)),
                     ),
                   ),
                 ),

@@ -27,11 +27,22 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   String _selectedCategory = 'Tất cả';
+  bool _isSendingOrder = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging && _tabController.index == 1) {
+        ref.read(kitchenOrdersProvider.notifier).fetchOrders(force: true);
+        ref.read(tableListProvider.notifier).fetchTables(force: true);
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(kitchenOrdersProvider.notifier).fetchOrders(force: true);
+      ref.read(tableListProvider.notifier).fetchTables(force: true);
+    });
   }
 
   @override
@@ -43,11 +54,23 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
   // Hộp thoại AI tư vấn chọn món tại bàn
   void _showAiRecommendationSheet(List<MenuItemModel> menuItems) {
     final queryCtrl = TextEditingController();
-    final quickPrompts = [
-      '🔥 Món đặc trưng nhất của quán',
-      '💑 Đi 2 người nên gọi món gì?',
-      '🌶️ Món ngon không cay cho trẻ em',
-      '💸 Combo ăn no giá tiết kiệm',
+    final List<Map<String, dynamic>> quickPrompts = [
+      {
+        'label': 'Món đặc trưng nhất của quán',
+        'icon': Icons.local_fire_department_rounded,
+      },
+      {
+        'label': 'Đi 2 người nên gọi món gì?',
+        'icon': Icons.favorite_rounded,
+      },
+      {
+        'label': 'Món ngon không cay cho trẻ em',
+        'icon': Icons.child_care_rounded,
+      },
+      {
+        'label': 'Combo ăn no giá tiết kiệm',
+        'icon': Icons.savings_rounded,
+      },
     ];
 
     showModalBottomSheet(
@@ -124,8 +147,15 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
-                  children: quickPrompts.map((prompt) {
+                  children: quickPrompts.map((item) {
+                    final prompt = item['label'] as String;
+                    final iconData = item['icon'] as IconData;
                     return ActionChip(
+                      avatar: Icon(
+                        iconData,
+                        size: 16,
+                        color: const Color(0xFF6A1B9A),
+                      ),
                       backgroundColor: Colors.purple.shade50,
                       side: BorderSide.none,
                       shape: RoundedRectangleBorder(
@@ -237,18 +267,27 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
 
   @override
   Widget build(BuildContext context) {
-    final menuItems = ref
-        .watch(menuDbProvider)
-        .where(
-            (m) => m.isAvailable && m.restaurantName == widget.restaurantName)
+    ref.watch(realRestaurantListProvider);
+    ref.watch(restaurantBankProvider);
+
+    final allAvailableMenu =
+        ref.watch(menuDbProvider).where((m) => m.isAvailable).toList();
+    final matchedMenu = allAvailableMenu
+        .where((m) => isSameRestaurantName(m.restaurantName, widget.restaurantName))
         .toList();
+    final menuItems = matchedMenu.isNotEmpty
+        ? matchedMenu
+        : allAvailableMenu.where((m) => m.restaurantName.isEmpty).toList();
 
     final cartItems = ref.watch(cartProvider);
     final cartNotifier = ref.read(cartProvider.notifier);
 
     final tableOrders = ref
         .watch(kitchenOrdersProvider)
-        .where((o) => o.tableNumber == widget.tableId)
+        .where((o) =>
+            o.tableNumber.trim().toLowerCase() ==
+                widget.tableId.trim().toLowerCase() &&
+            isSameRestaurantName(o.restaurantName, widget.restaurantName))
         .toList();
     final int totalOrderedDishes = tableOrders.fold(
         0,
@@ -287,6 +326,14 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Làm mới trạng thái món',
+            onPressed: () {
+              ref.read(kitchenOrdersProvider.notifier).fetchOrders(force: true);
+              ref.read(tableListProvider.notifier).fetchTables(force: true);
+            },
+            icon: const Icon(Icons.refresh_rounded, size: 20),
+          ),
           IconButton(
             tooltip: 'AI tư vấn chọn món',
             onPressed: () => _showAiRecommendationSheet(menuItems),
@@ -401,42 +448,69 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
                             borderRadius: BorderRadius.circular(16)),
                         elevation: 0,
                       ),
-                      onPressed: () {
-                        final orderItems = cartItems
-                            .map((c) => OrderItem(
-                                  id: '${DateTime.now().microsecondsSinceEpoch}_${c.name}',
-                                  dishName: c.name,
-                                  quantity: c.quantity,
-                                  price: c.price,
-                                  note: 'Khách tự đặt qua QR',
-                                  status: DishStatus.pending,
-                                ))
-                            .toList();
+                      onPressed: _isSendingOrder
+                          ? null
+                          : () async {
+                              setState(() => _isSendingOrder = true);
+                              final orderItems = cartItems
+                                  .map((c) => OrderItem(
+                                        id: '${DateTime.now().microsecondsSinceEpoch}_${c.name}',
+                                        dishName: c.name,
+                                        quantity: c.quantity,
+                                        price: c.price,
+                                        note: 'Khách tự đặt qua QR',
+                                        status: DishStatus.pending,
+                                      ))
+                                  .toList();
 
-                        ref
-                            .read(kitchenOrdersProvider.notifier)
-                            .addOrderFromWaiter(widget.tableId, orderItems);
-                        ref
-                            .read(tableListProvider.notifier)
-                            .setTableState(widget.tableId, TableState.occupied);
-                        cartNotifier.clearCart();
+                              final orderOk = await ref
+                                  .read(kitchenOrdersProvider.notifier)
+                                  .addOrderFromWaiter(
+                                    widget.tableId,
+                                    orderItems,
+                                    restaurantName: widget.restaurantName,
+                                  );
+                              final tableOk = await ref
+                                  .read(tableListProvider.notifier)
+                                  .setTableState(
+                                    widget.tableId,
+                                    TableState.occupied,
+                                    restaurantName: widget.restaurantName,
+                                  );
 
-                        _tabController.animateTo(1);
+                              if (!mounted) return;
+                              setState(() => _isSendingOrder = false);
+                              cartNotifier.clearCart();
+                              _tabController.animateTo(1);
 
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                                'Đã gửi đơn của ${widget.tableId} xuống Nhà Bếp!'),
-                            backgroundColor: const Color(0xFF00C853),
-                            behavior: SnackBarBehavior.floating,
-                          ),
-                        );
-                      },
-                      child: const Text(
-                        'GỬI ĐƠN',
-                        style: TextStyle(
-                            fontWeight: FontWeight.w900, fontSize: 15),
-                      ),
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    (orderOk && tableOk)
+                                        ? 'Đã gửi đơn của ${widget.tableId} (trạng thái: Chờ bếp) và chuyển bàn sang Đang phục vụ!'
+                                        : 'Đã ghi nhận đơn của ${widget.tableId} tại máy (đang chờ đồng bộ mạng)!',
+                                  ),
+                                  backgroundColor: (orderOk && tableOk)
+                                      ? const Color(0xFF00C853)
+                                      : Colors.orange.shade800,
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            },
+                      child: _isSendingOrder
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Text(
+                              'GỬI ĐƠN',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.w900, fontSize: 15),
+                            ),
                     )
                   ],
                 ),
@@ -720,8 +794,18 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
     );
   }
 
-  // Tab theo dõi tiến độ món đã gọi và thanh toán
+  // Tab theo dõi tiến độ món đã gọi và gọi nhân viên thanh toán
   Widget _buildOrderTrackingTab(List<KitchenOrder> tableOrders) {
+    final currentTable = ref
+        .watch(tableListProvider)
+        .where((t) =>
+            t.number.trim().toLowerCase() ==
+                widget.tableId.trim().toLowerCase() &&
+            isSameRestaurantName(t.restaurantName, widget.restaurantName))
+        .firstOrNull;
+    final bool isWaitingPayment =
+        currentTable?.state == TableState.needPayment;
+
     int totalTableBill = 0;
     for (final o in tableOrders) {
       for (final i in o.items) {
@@ -774,6 +858,34 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
 
     return Column(
       children: [
+        if (isWaitingPayment)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF8E1),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.orange.shade300),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.notifications_active_rounded,
+                    color: Color(0xFFE65100), size: 22),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Đã thông báo Nhân viên! Nhân viên phục vụ đang mang hóa đơn & mã QR thanh toán ra bàn cho bạn.',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFFE65100),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
@@ -936,123 +1048,23 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
                     Expanded(
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF00C853),
+                          backgroundColor: isWaitingPayment
+                              ? const Color(0xFFE65100)
+                              : const Color(0xFF00C853),
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14)),
                         ),
-                        onPressed: () {
-                          ref.read(tableListProvider.notifier).setTableState(
-                              widget.tableId, TableState.needPayment);
-                          final allRestaurants =
-                              ref.read(realRestaurantListProvider);
-                          final bankInfo = ref
-                              .read(restaurantBankProvider.notifier)
-                              .getBankForRestaurant(
-                                restaurantName: widget.restaurantName,
-                                restaurants: allRestaurants,
-                              );
-                          final transferNote =
-                              '${widget.tableId} thanh toan';
-
-                          showDialog(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(24)),
-                              title: const Column(
-                                children: [
-                                  Icon(Icons.notifications_active_rounded,
-                                      color: Color(0xFF00C853), size: 48),
-                                  SizedBox(height: 10),
-                                  Text('Đã gọi Nhân viên thanh toán!',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w900,
-                                          fontSize: 17)),
-                                ],
-                              ),
-                              content: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    'Yêu cầu thanh toán của ${widget.tableId} (${formatCurrency(totalTableBill)}) đã được gửi tới Nhân viên phục vụ.',
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(fontSize: 13),
-                                  ),
-                                  if (bankInfo != null &&
-                                      bankInfo.isConfigured) ...[
-                                    const SizedBox(height: 14),
-                                    Container(
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFF6F7FB),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(
-                                            color: Colors.green.shade200),
-                                      ),
-                                      child: Column(
-                                        children: [
-                                          const Text(
-                                            'Quét mã QR để chuyển khoản nhanh:',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          ClipRRect(
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                            child: Image.network(
-                                              bankInfo.buildVietQrUrl(
-                                                amount: totalTableBill,
-                                                addInfo: transferNote,
-                                              ),
-                                              width: 175,
-                                              height: 175,
-                                              fit: BoxFit.contain,
-                                              errorBuilder: (_, __, ___) =>
-                                                  QrImageView(
-                                                data:
-                                                    'VIETQR|${bankInfo.bankId}|${bankInfo.accountNo}|AMOUNT:$totalTableBill',
-                                                version: QrVersions.auto,
-                                                size: 150,
-                                                backgroundColor: Colors.white,
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 6),
-                                          Text(
-                                            '${bankInfo.bankName}\nSTK: ${bankInfo.accountNo} ${bankInfo.accountName.isNotEmpty ? "• ${bankInfo.accountName}" : ""}',
-                                            textAlign: TextAlign.center,
-                                            style: const TextStyle(
-                                              fontSize: 11.5,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                              actions: [
-                                ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFFFF5722),
-                                      foregroundColor: Colors.white),
-                                  onPressed: () => Navigator.pop(ctx),
-                                  child: const Text('Đã hiểu'),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.receipt_long_rounded),
-                        label: const Text('Gọi thanh toán',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        onPressed: () =>
+                            _notifyStaffForPayment(totalTableBill),
+                        icon: const Icon(Icons.notifications_active_rounded),
+                        label: Text(
+                          isWaitingPayment
+                              ? 'Nhắc lại Nhân viên'
+                              : 'Gọi thanh toán',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ),
                   ],
@@ -1062,6 +1074,258 @@ class _MenuScreenState extends ConsumerState<MenuScreen>
           ),
         ),
       ],
+    );
+  }
+
+  // Gửi thông báo gọi Nhân viên hoặc chuyển khoản VietQR tự động (TC25, TC27)
+  void _notifyStaffForPayment(int totalTableBill) {
+    ref.read(tableListProvider.notifier).setTableState(
+          widget.tableId,
+          TableState.needPayment,
+          restaurantName: widget.restaurantName,
+        );
+
+    final allRestaurants = ref.read(realRestaurantListProvider);
+    final bankInfo = ref
+        .read(restaurantBankProvider.notifier)
+        .getBankForRestaurant(
+          restaurantName: widget.restaurantName,
+          restaurants: allRestaurants,
+        );
+    final bool hasValidBank = bankInfo != null && bankInfo.isConfigured;
+    final transferNote = '${widget.tableId} thanh toan';
+    final qrPayload = hasValidBank
+        ? 'VIETQR|${bankInfo.bankId}|${bankInfo.accountNo}|${bankInfo.accountName}|AMOUNT:$totalTableBill|NOTE:$transferNote'
+        : '';
+
+    bool isAutoConfirming = false;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => Dialog(
+          backgroundColor: Colors.white,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.notifications_active_rounded,
+                      color: Color(0xFF00C853), size: 36),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Thanh toán Hóa đơn tại bàn',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 18,
+                    color: Color(0xFF1A1D26),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${widget.restaurantName} • ${widget.tableId}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFFF5722),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Tổng thanh toán: ${formatCurrency(totalTableBill)}',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFFFF5722),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (hasValidBank)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF6F7FB),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.green.shade200),
+                    ),
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: SizedBox(
+                            width: 165,
+                            height: 165,
+                            child: Image.network(
+                              bankInfo.buildVietQrUrl(
+                                amount: totalTableBill,
+                                addInfo: transferNote,
+                              ),
+                              width: 165,
+                              height: 165,
+                              fit: BoxFit.contain,
+                              errorBuilder: (_, __, ___) => QrImageView(
+                                data: qrPayload,
+                                version: QrVersions.auto,
+                                size: 165.0,
+                                backgroundColor: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          bankInfo.bankName,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.green.shade800,
+                          ),
+                        ),
+                        Text(
+                          'STK: ${bankInfo.accountNo} • ${bankInfo.accountName}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF00C853),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                            ),
+                            icon: isAutoConfirming
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        color: Colors.white, strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.verified_rounded, size: 18),
+                            label: const Text(
+                              'Tôi đã chuyển khoản VietQR',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                            onPressed: isAutoConfirming
+                                ? null
+                                : () async {
+                                    setDialogState(
+                                        () => isAutoConfirming = true);
+                                    final orderNotifier = ref.read(
+                                        kitchenOrdersProvider.notifier);
+                                    final tableNotifier =
+                                        ref.read(tableListProvider.notifier);
+                                    final resNotifier =
+                                        ref.read(reservationProvider.notifier);
+                                    await orderNotifier.settleOrdersForTable(
+                                      widget.tableId,
+                                      restaurantName: widget.restaurantName,
+                                      fallbackAmount: totalTableBill,
+                                      paymentMethod: 'VIETQR_AUTO',
+                                    );
+                                    await tableNotifier.setTableState(
+                                      widget.tableId,
+                                      TableState.empty,
+                                      restaurantName: widget.restaurantName,
+                                    );
+                                    await resNotifier
+                                        .completeReservationForTable(
+                                      widget.tableId,
+                                      restaurantName: widget.restaurantName,
+                                    );
+                                    if (dialogContext.mounted) {
+                                      Navigator.of(dialogContext).pop();
+                                    }
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                              'Hệ thống đã tự động xác nhận giao dịch VietQR ${formatCurrency(totalTableBill)} thành công!'),
+                                          backgroundColor:
+                                              const Color(0xFF00C853),
+                                        ),
+                                      );
+                                    }
+                                  },
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF8E1),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.orange.shade300),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.payments_outlined,
+                            color: Color(0xFFE65100), size: 22),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Nhà hàng hiện chưa khai báo tài khoản ngân hàng VietQR. Vui lòng chuẩn bị TIỀN MẶT, nhân viên đang ra bàn thu tiền.',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFFE65100),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF6C7278),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text(
+                      'Đóng (Chờ nhân viên ra bàn)',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

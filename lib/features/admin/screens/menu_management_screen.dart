@@ -493,9 +493,10 @@ class MenuManagementScreen extends ConsumerWidget {
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.04),
+                            color: Colors.black.withOpacity(0.03),
                             blurRadius: 15,
                             offset: const Offset(0, 5),
                           )
@@ -600,10 +601,13 @@ class MenuManagementScreen extends ConsumerWidget {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   IconButton(
-                                    visualDensity: VisualDensity.compact,
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: const Color(0xFFEFF6FF),
+                                      minimumSize: const Size(40, 40),
+                                    ),
                                     tooltip: 'Sửa món / Sửa giá',
                                     icon: const Icon(Icons.edit_outlined,
-                                        color: Color(0xFF1E88E5), size: 20),
+                                        color: Color(0xFF1E88E5), size: 19),
                                     onPressed: () => _showDishDialog(
                                       context,
                                       ref,
@@ -611,13 +615,17 @@ class MenuManagementScreen extends ConsumerWidget {
                                       existingDish: dish,
                                     ),
                                   ),
+                                  const SizedBox(width: 8),
                                   IconButton(
-                                    visualDensity: VisualDensity.compact,
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: const Color(0xFFFEF2F2),
+                                      minimumSize: const Size(40, 40),
+                                    ),
                                     tooltip: 'Xóa món',
                                     icon: const Icon(
                                         Icons.delete_outline_rounded,
-                                        color: Color(0xFFE53935),
-                                        size: 20),
+                                        color: Color(0xFFDC2626),
+                                        size: 19),
                                     onPressed: () {
                                       showDialog(
                                         context: context,

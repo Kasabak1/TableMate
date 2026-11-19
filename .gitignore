@@ -49,3 +49,8 @@ app.*.map.json
 .env
 *.env
 *.local.dart
+
+# AI Agent Skills (Local only)
+.agents/
+.agent/
+design-system/

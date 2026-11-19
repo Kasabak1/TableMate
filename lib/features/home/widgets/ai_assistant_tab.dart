@@ -17,11 +17,23 @@ class _AiAssistantTabState extends ConsumerState<AiAssistantTab> {
   final TextEditingController _aiTextCtrl = TextEditingController();
   String _lastAiQuestion = '';
 
-  final List<String> _aiSuggestions = [
-    '🍲 Gợi ý quán lẩu thái ngon',
-    '🥩 Quán món Âu hẹn hò lãng mạn',
-    '💸 Món ngon giá dưới 100k',
-    '👨‍👩‍👧‍👦 Quán rộng rãi cho gia đình',
+  final List<Map<String, dynamic>> _aiSuggestions = const [
+    {
+      'label': 'Gợi ý quán lẩu thái ngon',
+      'icon': Icons.soup_kitchen_rounded,
+    },
+    {
+      'label': 'Quán món Âu hẹn hò lãng mạn',
+      'icon': Icons.favorite_rounded,
+    },
+    {
+      'label': 'Món ngon giá dưới 100k',
+      'icon': Icons.savings_rounded,
+    },
+    {
+      'label': 'Quán rộng rãi cho gia đình',
+      'icon': Icons.groups_rounded,
+    },
   ];
 
   @override
@@ -267,21 +279,28 @@ class _AiAssistantTabState extends ConsumerState<AiAssistantTab> {
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
-                  children: _aiSuggestions.map((suggestion) {
+                  children: _aiSuggestions.map((item) {
+                    final label = item['label'] as String;
+                    final iconData = item['icon'] as IconData;
                     return ActionChip(
+                      avatar: Icon(
+                        iconData,
+                        size: 16,
+                        color: const Color(0xFF6A1B9A),
+                      ),
                       backgroundColor: Colors.white,
                       side: BorderSide(color: Colors.purple.shade100),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(20)),
                       label: Text(
-                        suggestion,
+                        label,
                         style: const TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                           color: Color(0xFF6A1B9A),
                         ),
                       ),
-                      onPressed: () => _sendAIQuery(suggestion),
+                      onPressed: () => _sendAIQuery(label),
                     );
                   }).toList(),
                 ),

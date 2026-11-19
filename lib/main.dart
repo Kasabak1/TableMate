@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'core/theme/app_theme.dart';
 import 'routes/app_router.dart';
 
 const String supabaseUrl = 'https://mddalpadojitipwzdwqi.supabase.co';
@@ -43,11 +44,7 @@ class MyApp extends ConsumerWidget {
 
     return MaterialApp.router(
       title: 'Smart Restaurant Order',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFFF5722)),
-        scaffoldBackgroundColor: const Color(0xFFF6F7FB),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.lightTheme,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
     );

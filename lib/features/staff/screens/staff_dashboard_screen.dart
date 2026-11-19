@@ -21,14 +21,21 @@ class StaffDashboardScreen extends ConsumerWidget {
         subRole.contains('kitchen') ||
         subRole.contains('bar');
 
+    final myRestaurant = currentUser?.restaurantName ?? '';
+    final myOrders = orders
+        .where((o) =>
+            myRestaurant.isEmpty ||
+            o.restaurantName.isEmpty ||
+            o.restaurantName == myRestaurant)
+        .toList();
+
     int readyToServeCount = 0;
-    for (final o in orders) {
+    for (final o in myOrders) {
       for (final item in o.items) {
         if (item.status == DishStatus.ready) readyToServeCount++;
       }
     }
 
-    final myRestaurant = currentUser?.restaurantName ?? '';
     final int pendingBookingCount = reservations
         .where((r) =>
             r.status == 'PENDING' &&

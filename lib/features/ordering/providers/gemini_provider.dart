@@ -9,8 +9,8 @@ class GeminiAssistantNotifier extends StateNotifier<String> {
   GeminiAssistantNotifier() : super('');
 
   static const List<String> _candidateModels = [
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
   ];
 
   // Gọi API Gemini
@@ -107,7 +107,7 @@ Nhiệm vụ: Dựa đúng vào dữ liệu trên, hãy gợi ý 1 nhà hàng ph
 
     final picks = (matched.isNotEmpty ? matched : menu).take(2).toList();
     final dishList = picks.map((m) => '${m.name} (${m.price}đ)').join(' và ');
-    return '✨ Gợi ý tại $restaurantName: Bạn nên thử món $dishList. Đây là những món nổi bật trong thực đơn của quán.';
+    return 'Gợi ý tại $restaurantName: Bạn nên thử món $dishList. Đây là những món nổi bật trong thực đơn của quán.';
   }
 
   // Gợi ý dự phòng theo danh sách nhà hàng
@@ -173,7 +173,7 @@ Nhiệm vụ: Dựa đúng vào dữ liệu trên, hãy gợi ý 1 nhà hàng ph
     final resName = resLine.replaceFirst('Nhà hàng:', '').trim();
     final menuInfo = menuLine.replaceFirst('Thực đơn:', '').trim();
 
-    return '🍽️ Với yêu cầu "$query", gợi ý bạn ghé $resName:\n\n'
+    return 'Với yêu cầu "$query", gợi ý bạn ghé $resName:\n\n'
         '• Thực đơn: $menuInfo.\n'
         '• Bạn có thể chuyển sang tab Khám phá để xem bản đồ hoặc Đặt bàn ngay.';
   }

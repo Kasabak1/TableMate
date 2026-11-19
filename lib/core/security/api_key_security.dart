@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:str/core/config/api_keys.dart';
 
 // Bảo mật và mã hóa API Key
 class ApiKeySecurity {
@@ -7,16 +8,14 @@ class ApiKeySecurity {
   static const String _prefsKey = 'encrypted_gemini_api_key_b64';
   static String? _runtimeApiKey;
 
-  static const List<int> _encryptedKeyBytes = [
-    18, 36, 27, 19, 39, 54, 54, 19, 18, 21, 95, 118, 109,
-    80, 9, 84, 89, 6, 18, 16, 26, 50, 31, 22, 103, 92,
-    85, 111, 23, 53, 16, 42, 23, 6, 2, 61, 58, 61, 10
-  ];
-
   // Lấy API Key đã giải mã
   static Future<String> getGeminiApiKey() async {
     if (_runtimeApiKey != null && _runtimeApiKey!.isNotEmpty) {
       return _runtimeApiKey!;
+    }
+    final codeKey = ApiKeys.geminiApiKey.trim();
+    if (codeKey.isNotEmpty) {
+      return codeKey;
     }
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -28,11 +27,7 @@ class ApiKeySecurity {
     } catch (_) {}
 
     const envKey = String.fromEnvironment('GEMINI_API_KEY');
-    if (envKey.isNotEmpty) {
-      return envKey;
-    }
-
-    return decryptBytes(_encryptedKeyBytes);
+    return envKey;
   }
 
   // Lưu và mã hóa API Key mới

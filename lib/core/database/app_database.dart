@@ -594,7 +594,28 @@ class RestaurantBankNotifier
     extends StateNotifier<Map<String, RestaurantBankInfo>> {
   static const String _prefsKey = 'restaurant_bank_accounts_v1';
 
-  RestaurantBankNotifier() : super({}) {
+  static const Map<String, RestaurantBankInfo> _defaultBanks = {
+    'Bếp Thái Koh Yam': RestaurantBankInfo(
+      bankId: 'MB',
+      bankName: 'MB Bank - Ngân hàng Quân Đội',
+      accountNo: '0901111111888',
+      accountName: 'BEP THAI KOH YAM',
+    ),
+    'Bò Tơ Quán Mộc': RestaurantBankInfo(
+      bankId: 'VCB',
+      bankName: 'Vietcombank - Ngoại thương VN',
+      accountNo: '0902222222999',
+      accountName: 'BO TO QUAN MOC',
+    ),
+    "Pizza 4P's Tràng Tiền": RestaurantBankInfo(
+      bankId: 'TCB',
+      bankName: 'Techcombank - Kỹ thương VN',
+      accountNo: '1903333333668',
+      accountName: 'PIZZA 4PS TRANG TIEN',
+    ),
+  };
+
+  RestaurantBankNotifier() : super({..._defaultBanks}) {
     _loadFromPrefs();
   }
 
@@ -610,7 +631,7 @@ class RestaurantBankNotifier
             loaded[key] = RestaurantBankInfo.fromJson(value);
           }
         });
-        state = {...loaded, ...state};
+        state = {..._defaultBanks, ...state, ...loaded};
       }
     } catch (e) {
       debugPrint('Lỗi đọc cấu hình ngân hàng: $e');
@@ -650,44 +671,77 @@ class RestaurantBankNotifier
     String? ownerPhone,
     List<RestaurantModel>? restaurants,
   }) {
+    final cleanResName = restaurantName?.trim() ?? '';
+    final cleanPhone = ownerPhone?.trim() ?? '';
+
+    if (cleanResName.isNotEmpty && state.containsKey(cleanResName)) {
+      final localInfo = state[cleanResName]!;
+      return localInfo.isConfigured ? localInfo : null;
+    }
+
+    if (cleanPhone.isNotEmpty && state.containsKey('phone:$cleanPhone')) {
+      final phoneInfo = state['phone:$cleanPhone']!;
+      return phoneInfo.isConfigured ? phoneInfo : null;
+    }
+
     if (restaurants != null) {
       final matched = restaurants.where((r) {
-        final matchName = restaurantName != null &&
-            restaurantName.trim().isNotEmpty &&
-            r.name.trim() == restaurantName.trim();
-        final matchPhone = ownerPhone != null &&
-            ownerPhone.trim().isNotEmpty &&
-            r.ownerPhone.trim() == ownerPhone.trim();
+        final matchName = cleanResName.isNotEmpty &&
+            r.name.trim().toLowerCase() == cleanResName.toLowerCase();
+        final matchPhone =
+            cleanPhone.isNotEmpty && r.ownerPhone.trim() == cleanPhone;
         return matchName || matchPhone;
       }).firstOrNull;
 
-      if (matched != null && matched.bankAccountNo.trim().isNotEmpty) {
-        return RestaurantBankInfo(
-          bankId: matched.bankId.isNotEmpty ? matched.bankId : 'MB',
-          bankName:
-              matched.bankName.isNotEmpty ? matched.bankName : matched.bankId,
-          accountNo: matched.bankAccountNo,
-          accountName: matched.bankAccountName,
-        );
+      if (matched != null) {
+        if (matched.bankAccountNo.trim().isNotEmpty) {
+          return RestaurantBankInfo(
+            bankId: matched.bankId.isNotEmpty ? matched.bankId : 'MB',
+            bankName: matched.bankName.isNotEmpty
+                ? matched.bankName
+                : matched.bankId,
+            accountNo: matched.bankAccountNo,
+            accountName: matched.bankAccountName,
+          );
+        }
+        if (!_defaultBanks.containsKey(matched.name.trim())) {
+          return null;
+        }
       }
     }
 
-    if (restaurantName != null &&
-        restaurantName.trim().isNotEmpty &&
-        state.containsKey(restaurantName.trim())) {
-      return state[restaurantName.trim()];
+    if (cleanResName.isNotEmpty && _defaultBanks.containsKey(cleanResName)) {
+      return _defaultBanks[cleanResName];
     }
 
-    if (ownerPhone != null &&
-        ownerPhone.trim().isNotEmpty &&
-        state.containsKey('phone:${ownerPhone.trim()}')) {
-      return state['phone:${ownerPhone.trim()}'];
-    }
-
-    if (state.isNotEmpty) {
-      return state.values.first;
-    }
     return null;
+  }
+}
+
+// Xác thực và ký số bảo mật cho mã QR bàn do chủ nhà hàng phát hành
+class QrSecurityHelper {
+  static const String _ownerSecret = 'TableMate_Owner_Auth_2026_Secret';
+
+  static String computeSignature(String restaurantName, String tableNumber) {
+    final payload =
+        '${restaurantName.trim().toLowerCase()}|${tableNumber.trim().toLowerCase()}|$_ownerSecret';
+    final bytes = utf8.encode(payload);
+    int hash = 0x811C9DC5;
+    for (final b in bytes) {
+      hash ^= b;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return hash.toRadixString(16).toUpperCase().padLeft(8, '0');
+  }
+
+  static String generateSignedTableQr(
+    String restaurantName,
+    String tableNumber,
+  ) {
+    final cleanRes = restaurantName.trim();
+    final cleanTable = tableNumber.trim();
+    final sig = computeSignature(cleanRes, cleanTable);
+    return '$cleanRes|$cleanTable|SIG:$sig';
   }
 }
 
@@ -864,6 +918,10 @@ class RestaurantListNotifier extends StateNotifier<List<RestaurantModel>> {
               .eq('restaurant_name', oldRestaurantName);
           await _supabase
               .from('menu_items')
+              .update({'restaurant_name': name})
+              .eq('restaurant_name', oldRestaurantName);
+          await _supabase
+              .from('restaurant_tables')
               .update({'restaurant_name': name})
               .eq('restaurant_name', oldRestaurantName);
         } catch (syncErr) {

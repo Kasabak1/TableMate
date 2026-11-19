@@ -1,14 +1,143 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:str/core/database/app_database.dart';
 import 'package:str/features/staff/providers/staff_provider.dart';
 
-// Màn hình điều phối chế biến món ăn (KDS)
-class KitchenView extends ConsumerWidget {
+// Màn hình điều phối chế biến món ăn (KDS - TC15, TC19, TC35, TC37)
+class KitchenView extends ConsumerStatefulWidget {
   const KitchenView({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final orders = ref.watch(kitchenOrdersProvider);
+  ConsumerState<KitchenView> createState() => _KitchenViewState();
+}
+
+class _KitchenViewState extends ConsumerState<KitchenView> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(kitchenOrdersProvider.notifier).fetchOrders(force: true);
+    });
+  }
+
+  Future<void> _handleUpdateDishStatus(
+    String orderId,
+    String itemId,
+    String dishName,
+    DishStatus newStatus,
+  ) async {
+    final ok = await ref
+        .read(kitchenOrdersProvider.notifier)
+        .updateDishStatus(orderId, itemId, newStatus);
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Mất kết nối mạng khi đổi trạng thái "$dishName"! Đã lưu cục bộ và ghi nhật ký lỗi.',
+          ),
+          backgroundColor: Colors.orange.shade900,
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'Xem nhật ký',
+            textColor: Colors.white,
+            onPressed: _showErrorLogsDialog,
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleMarkAllReady(String orderId) async {
+    final ok = await ref
+        .read(kitchenOrdersProvider.notifier)
+        .markAllReadyInOrder(orderId);
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Mất kết nối mạng khi hoàn thành phiếu #$orderId! Đã lưu cục bộ và ghi nhật ký lỗi.',
+          ),
+          backgroundColor: Colors.orange.shade900,
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'Xem nhật ký',
+            textColor: Colors.white,
+            onPressed: _showErrorLogsDialog,
+          ),
+        ),
+      );
+    }
+  }
+
+  void _showErrorLogsDialog() {
+    final logs = ref.read(syncErrorLogProvider);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.wifi_off_rounded, color: Color(0xFFDC2626)),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Nhật ký lỗi kết nối & đồng bộ',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: logs.isEmpty
+              ? const Text('Chưa ghi nhận lỗi kết nối nào.')
+              : ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: logs.length,
+                  separatorBuilder: (_, __) => const Divider(height: 12),
+                  itemBuilder: (_, idx) => Text(
+                    logs[idx],
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                ),
+        ),
+        actions: [
+          if (logs.isNotEmpty)
+            TextButton(
+              onPressed: () {
+                ref.read(syncErrorLogProvider.notifier).clearLogs();
+                Navigator.pop(ctx);
+              },
+              child: const Text('Xóa nhật ký',
+                  style: TextStyle(color: Colors.red)),
+            ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentUser = ref.watch(currentUserProvider);
+    final myRestaurant = (currentUser?.restaurantName ?? '').trim();
+    final errorLogs = ref.watch(syncErrorLogProvider);
+    final orders = ref
+        .watch(kitchenOrdersProvider)
+        .where((o) =>
+            myRestaurant.isEmpty ||
+            isSameRestaurantName(o.restaurantName, myRestaurant))
+        .toList();
 
     final activeOrders = orders
         .where((o) => o.items.any((i) =>
@@ -43,14 +172,47 @@ class KitchenView extends ConsumerWidget {
               ],
             ),
           ),
+          if (errorLogs.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: const Color(0xFFFFF8E1),
+              child: Row(
+                children: [
+                  const Icon(Icons.wifi_off_rounded,
+                      color: Color(0xFFE65100), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Cảnh báo mạng: ${errorLogs.first}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFE65100),
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _showErrorLogsDialog,
+                    child: const Text(
+                      'Nhật ký lỗi',
+                      style:
+                          TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: Container(
               color: const Color(0xFFF6F7FB),
               child: TabBarView(
                 children: [
-                  _buildKitchenOrderList(context, ref, activeOrders,
+                  _buildKitchenOrderList(context, activeOrders,
                       isHistory: false),
-                  _buildKitchenOrderList(context, ref, completedOrders,
+                  _buildKitchenOrderList(context, completedOrders,
                       isHistory: true),
                 ],
               ),
@@ -64,7 +226,6 @@ class KitchenView extends ConsumerWidget {
   // Danh sách phiếu chế biến tại bếp
   Widget _buildKitchenOrderList(
     BuildContext context,
-    WidgetRef ref,
     List<KitchenOrder> orderList, {
     required bool isHistory,
   }) {
@@ -246,12 +407,12 @@ class KitchenView extends ConsumerWidget {
                                   'Nhận nấu',
                                   style: TextStyle(fontWeight: FontWeight.bold),
                                 ),
-                                onPressed: () {
-                                  ref
-                                      .read(kitchenOrdersProvider.notifier)
-                                      .updateDishStatus(order.orderId, item.id,
-                                          DishStatus.cooking);
-                                },
+                                onPressed: () => _handleUpdateDishStatus(
+                                  order.orderId,
+                                  item.id,
+                                  item.dishName,
+                                  DishStatus.cooking,
+                                ),
                               )
                             else if (item.status == DishStatus.cooking)
                               ElevatedButton.icon(
@@ -268,12 +429,12 @@ class KitchenView extends ConsumerWidget {
                                   'Báo xong',
                                   style: TextStyle(fontWeight: FontWeight.bold),
                                 ),
-                                onPressed: () {
-                                  ref
-                                      .read(kitchenOrdersProvider.notifier)
-                                      .updateDishStatus(order.orderId, item.id,
-                                          DishStatus.ready);
-                                },
+                                onPressed: () => _handleUpdateDishStatus(
+                                  order.orderId,
+                                  item.id,
+                                  item.dishName,
+                                  DishStatus.ready,
+                                ),
                               )
                             else
                               const Chip(
@@ -302,9 +463,7 @@ class KitchenView extends ConsumerWidget {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          onPressed: () => ref
-                              .read(kitchenOrdersProvider.notifier)
-                              .markAllReadyInOrder(order.orderId),
+                          onPressed: () => _handleMarkAllReady(order.orderId),
                         ),
                       ),
                   ],

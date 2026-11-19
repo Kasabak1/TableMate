@@ -31,14 +31,46 @@ class AdminDashboardScreen extends ConsumerWidget {
         ? myRestaurantName
         : 'Chưa thiết lập tên Nhà hàng';
 
-    final orders = ref.watch(kitchenOrdersProvider);
-    final tables = ref.watch(tableListProvider);
+    final cleanMyRes = myRestaurantName.trim();
+    final orders = ref
+        .watch(kitchenOrdersProvider)
+        .where((o) =>
+            cleanMyRes.isEmpty ||
+            isSameRestaurantName(o.restaurantName, cleanMyRes))
+        .toList();
+    final tables = ref
+        .watch(tableListProvider)
+        .where((t) =>
+            cleanMyRes.isNotEmpty &&
+            isSameRestaurantName(t.restaurantName, cleanMyRes))
+        .toList();
     final occupiedTablesCount = tables
         .where((t) =>
             t.state == TableState.occupied || t.state == TableState.needPayment)
         .length;
 
-    final int settledRevenue = ref.watch(settledRevenueProvider);
+    final paidOrders = ref
+        .watch(paidOrdersProvider)
+        .where((o) =>
+            cleanMyRes.isEmpty ||
+            isSameRestaurantName(o.restaurantName, cleanMyRes))
+        .toList();
+    final int paidFromDb = paidOrders.fold(
+      0,
+      (sumOrder, order) =>
+          sumOrder +
+          order.items.fold(
+            0,
+            (sumItem, item) => sumItem + (item.price * item.quantity),
+          ),
+    );
+    final settledMap = ref.watch(settledRevenueByRestaurantProvider);
+    final int resLocalSettled = cleanMyRes.isNotEmpty
+        ? (settledMap[cleanMyRes.toLowerCase()] ?? 0)
+        : ref.watch(settledRevenueProvider);
+    final int settledRevenue =
+        paidFromDb >= resLocalSettled ? paidFromDb : resLocalSettled;
+
     final int tempRevenue = orders.fold(
       0,
       (sumOrder, order) =>
@@ -48,7 +80,6 @@ class AdminDashboardScreen extends ConsumerWidget {
             (sumItem, item) => sumItem + (item.price * item.quantity),
           ),
     );
-    final int totalDayRevenue = settledRevenue + tempRevenue;
 
     final myMenuItems = ref
         .watch(menuDbProvider)
@@ -165,12 +196,18 @@ class AdminDashboardScreen extends ConsumerWidget {
                 ),
                 const SizedBox(width: 16),
                 _buildStatCard(
-                  title: 'Tổng doanh thu ca',
-                  value: formatCurrency(totalDayRevenue),
-                  subtitle: 'Đã thu: ${formatCurrency(settledRevenue)}',
+                  title: 'Doanh thu đã thu',
+                  value: formatCurrency(settledRevenue),
+                  subtitle: 'Đang phục vụ: ${formatCurrency(tempRevenue)}',
                   icon: Icons.account_balance_wallet_rounded,
                   color: Colors.purple,
                   compactValue: true,
+                  onTap: () => _showRevenueHistorySheet(
+                    context,
+                    paidOrders,
+                    settledRevenue,
+                    tempRevenue,
+                  ),
                 ),
               ],
             ),
@@ -511,7 +548,10 @@ class AdminDashboardScreen extends ConsumerWidget {
                                 ref
                                     .read(reservationProvider.notifier)
                                     .assignTableToReservation(
-                                        res.id, selectedTable);
+                                      res.id,
+                                      selectedTable,
+                                      restaurantName: res.restaurantName,
+                                    );
                                 Navigator.pop(ctx);
                               },
                               child: const Text('Xác nhận'),
@@ -539,51 +579,286 @@ class AdminDashboardScreen extends ConsumerWidget {
     required IconData icon,
     required Color color,
     bool compactValue = false,
+    VoidCallback? onTap,
   }) {
     return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
           borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.03),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            )
-          ],
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.03),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                )
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(icon, color: color, size: 24),
+                    ),
+                    if (onTap != null)
+                      Icon(
+                        Icons.open_in_new_rounded,
+                        size: 16,
+                        color: Colors.grey.shade400,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: compactValue ? 20 : 26,
+                    fontWeight: FontWeight.w900,
+                    color: const Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(title,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 2),
+                Text(subtitle,
+                    style:
+                        const TextStyle(color: Color(0xFF475569), fontSize: 11)),
+              ],
+            ),
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
+      ),
+    );
+  }
+
+  // Bảng chi tiết lịch sử doanh thu đã thu
+  void _showRevenueHistorySheet(
+    BuildContext context,
+    List<KitchenOrder> paidOrders,
+    int settledRevenue,
+    int tempRevenue,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) => DraggableScrollableSheet(
+        initialChildSize: 0.65,
+        minChildSize: 0.45,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (_, scrollController) => Padding(
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
               ),
-              child: Icon(icon, color: color, size: 24),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              value,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: compactValue ? 20 : 26,
-                fontWeight: FontWeight.w900,
-                color: const Color(0xFF1A1D26),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Chi tiết Doanh thu & Hóa đơn',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(sheetCtx),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 4),
-            Text(title,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-            const SizedBox(height: 2),
-            Text(subtitle,
-                style: TextStyle(color: Colors.grey[500], fontSize: 11)),
-          ],
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF7C3AED), Color(0xFF9333EA)],
+                  ),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'TỔNG ĐÃ THU (ĐÃ CHỐT)',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          formatCurrency(settledRevenue),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        const Text(
+                          'ĐANG PHỤC VỤ',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          formatCurrency(tempRevenue),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Hóa đơn đã thanh toán (${paidOrders.length})',
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: paidOrders.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'Chưa có hóa đơn nào được chốt thanh toán.',
+                          style: TextStyle(color: Color(0xFF475569)),
+                        ),
+                      )
+                    : ListView.separated(
+                        controller: scrollController,
+                        itemCount: paidOrders.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (_, index) {
+                          final ord = paidOrders[index];
+                          final ordTotal = ord.items.fold<int>(
+                            0,
+                            (sum, item) => sum + (item.price * item.quantity),
+                          );
+                          return Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(14),
+                              border:
+                                  Border.all(color: const Color(0xFFE2E8F0)),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFDCFCE7),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(
+                                    Icons.receipt_long_rounded,
+                                    color: Color(0xFF16A34A),
+                                    size: 20,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '${ord.tableNumber} • Mã: ${ord.orderId}',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 13.5,
+                                          color: Color(0xFF0F172A),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        ord.items
+                                            .map((i) =>
+                                                '${i.dishName} x${i.quantity}')
+                                            .join(', '),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Color(0xFF475569),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  formatCurrency(ordTotal),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 14,
+                                    color: Color(0xFF16A34A),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
         ),
       ),
     );
